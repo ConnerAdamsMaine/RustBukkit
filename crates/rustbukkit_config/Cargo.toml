@@ -1,10 +1,10 @@
 [package]
-name    = "rustcraft_config"
+name    = "rustbukkit_config"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "rustcraft_config"
+name = "rustbukkit_config"
 path = "src/lib.rs"
 
 [dependencies]

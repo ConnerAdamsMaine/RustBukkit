@@ -3,13 +3,13 @@ cargo-features = [ "codegen-backend", "trim-paths" ]
 [workspace]
 members = [
   # Prevent collapsing
-  "crates/rustcraft_bin",
-  "crates/rustcraft_chunks",
-  "crates/rustcraft_config",
-  "crates/rustcraft_decoding",
-  "crates/rustcraft_encoding",
-  "crates/rustcraft_pool",
-  "crates/rustcraft_sdk",
+  "crates/rustbukkit_bin",
+  "crates/rustbukkit_chunks",
+  "crates/rustbukkit_config",
+  "crates/rustbukkit_decoding",
+  "crates/rustbukkit_encoding",
+  "crates/rustbukkit_pool",
+  "crates/rustbukkit_sdk",
 ]
 exclude = [
   #
@@ -34,7 +34,7 @@ exclude = [
 ]
 
 # [package]
-# name    = "rustcraft"
+# name    = "rustbukkit"
 # version = "0.1.0"
 # edition = "2021"
 
@@ -86,7 +86,7 @@ overflow-checks  = false                       # debatable
 strip            = "symbols"                   # true | false | "none" | "symbols" | "debuginfo" ## Leave off @ w. THIS IS NOT OBFUSCATION.
 panic            = "unwind"
 lto              = "off"                       # true | false | "off" | "thin" | "fat" ## Can't use with cranelift yet
-trim-paths       = [ "diagnostics", "object" ]
+trim-paths       = "all"
 # tune-cpu         = "native"
 
 

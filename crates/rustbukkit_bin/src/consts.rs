@@ -1,10 +1,9 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-const SERVER_ADDR_LIT: [u8; 4] = [127, 0, 0, 1];
 const SERVER_PORT: u16 = 25565;
 
 pub const SERVER_ADDR: SocketAddr =
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::from_octets(SERVER_ADDR_LIT)), SERVER_PORT);
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), SERVER_PORT);
 
 pub const CHUNK_SEED: u64 = 12345;
 

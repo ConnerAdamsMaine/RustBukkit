@@ -1,10 +1,10 @@
 [package]
-name    = "rustcraft_decoding"
+name    = "rustbukkit_decoding"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "rustcraft_decoding"
+name = "rustbukkit_decoding"
 path = "src/lib.rs"
 
 [dependencies]

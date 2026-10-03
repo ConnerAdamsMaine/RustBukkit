@@ -478,7 +478,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustcraft_bin"
+name = "rustbukkit_bin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -489,7 +489,7 @@ dependencies = [
  "md5",
  "parking_lot",
  "rayon",
- "rustcraft_config",
+ "rustbukkit_config",
  "serde",
  "serde_json",
  "smallvec",
@@ -501,33 +501,33 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustcraft_chunks"
+name = "rustbukkit_chunks"
 version = "0.1.0"
 
 [[package]]
-name = "rustcraft_config"
+name = "rustbukkit_config"
 version = "0.1.0"
 
 [[package]]
-name = "rustcraft_decoding"
-version = "0.1.0"
-dependencies = [
- "smallvec",
-]
-
-[[package]]
-name = "rustcraft_encoding"
+name = "rustbukkit_decoding"
 version = "0.1.0"
 dependencies = [
  "smallvec",
 ]
 
 [[package]]
-name = "rustcraft_pool"
+name = "rustbukkit_encoding"
+version = "0.1.0"
+dependencies = [
+ "smallvec",
+]
+
+[[package]]
+name = "rustbukkit_pool"
 version = "0.1.0"
 
 [[package]]
-name = "rustcraft_sdk"
+name = "rustbukkit_sdk"
 version = "0.1.0"
 
 [[package]]

@@ -1,11 +1,11 @@
 [package]
-name    = "rustcraft_chunks"
+name    = "rustbukkit_chunks"
 version = "0.1.0"
 edition = "2024"
 
 
 [lib]
-name = "rustcraft_chunks"
+name = "rustbukkit_chunks"
 path = "src/lib.rs"
 
 

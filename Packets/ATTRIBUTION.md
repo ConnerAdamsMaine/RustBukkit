@@ -10,7 +10,7 @@ The protocol documentation files in this directory are based on reference materi
 
 ## Usage
 
-These documentation files have been adapted and used as reference material for implementing protocol support in RustCraft. They serve as documentation of the Minecraft Java Edition network protocol structure and packet definitions.
+These documentation files have been adapted and used as reference material for implementing protocol support in RustBukkit. They serve as documentation of the Minecraft Java Edition network protocol structure and packet definitions.
 
 ## Protocol Reference
 

@@ -1,10 +1,10 @@
 [package]
-name    = "rustcraft_bin"
+name    = "rustbukkit_bin"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "rustcraft"
+name = "rustbukkit"
 path = "src/main.rs"
 
 # TODO: 
@@ -14,7 +14,7 @@ dev-sdk = [  ]
 [dependencies]
 
 # Child crates
-rustcraft_config = { path = "../rustcraft_config" }
+rustbukkit_config = { path = "../rustbukkit_config" }
 
 # General dependencies
 anyhow             = { workspace = true } # Fine; binary application error handling.

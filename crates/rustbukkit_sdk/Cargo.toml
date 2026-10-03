@@ -1,15 +1,14 @@
 [package]
-name    = "rustcraft_encoding"
+name    = "rustbukkit_sdk"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "rustcraft_encoding"
+name = "rustbukkit_sdk"
 path = "src/lib.rs"
 
 [dependencies]
 
-smallvec = { workspace = true, features = [ "const_generics", "union", "specialization", "const_new", "write", "serde" ] }
 
 # Lint levels / priorities/priority
 # 0 = forbid

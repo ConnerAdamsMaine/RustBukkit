@@ -1,4 +1,4 @@
-# RustCraft
+# RustBukkit
 
 A high-performance Minecraft server implementation written in Rust, featuring protocol compliance, efficient chunk management, and realistic terrain generation.
 
@@ -18,10 +18,20 @@ cargo run
 
 # Release build (optimized)
 cargo build --release
-./target/release/rustcraft
+./target/release/rustbukkit
 ```
 
-The server listens on `127.0.0.1:25565`. Connect with your Minecraft client to `localhost:25565`.
+The server listens on all IPv4 interfaces (`0.0.0.0:25565`). On the same computer, connect to `localhost:25565`. Other computers on your network can connect to the server's local IP address on port `25565`.
+
+For connections from the internet, allow inbound TCP port `25565` in the server computer's firewall and forward TCP port `25565` on your router to that computer's local IP address. Give players your public IP address or a domain pointing to it. `0.0.0.0` is only the bind address; players cannot use it as the server address.
+
+On Windows, run this in an elevated PowerShell window to allow the port through the host firewall:
+
+```powershell
+New-NetFirewallRule -DisplayName "RustBukkit TCP 25565" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 25565
+```
+
+The current login flow does not verify Minecraft accounts. Anyone who can reach the server can choose a username.
 
 ---
 
@@ -62,7 +72,7 @@ The server listens on `127.0.0.1:25565`. Connect with your Minecraft client to `
 ## Project Structure
 
 ```
-RustCraft/
+RustBukkit/
 ├── src/
 │   ├── core/
 │   │   ├── server.rs          # Main server struct, TCP listener, connection handler
@@ -174,7 +184,7 @@ Play State
 
 ```
 ┌─────────────────────────────────────────┐
-│   TCP Listener (127.0.0.1:25565)        │
+│   TCP Listener (0.0.0.0:25565)          │
 └────────────────────┬────────────────────┘
                      │ accepts connections
                      ↓
@@ -383,7 +393,7 @@ The server uses `tracing` crate for structured, hierarchical logging:
 ```rust
 use tracing::{info, debug, warn, error};
 
-info!("[STARTUP] Server listening on 127.0.0.1:25565");
+info!("[STARTUP] Server listening on 0.0.0.0:25565");
 debug!("[PACKET] Read VarInt: {}", value);
 warn!("[CHUNK] Evicting chunk {}", pos);
 error!("[ERROR] Failed to load chunk: {}", err);
@@ -477,7 +487,7 @@ tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;  // 20 TPS
 ### Successful Compilation
 ```bash
 $ cargo build
-   Compiling rustcraft v0.1.0
+   Compiling rustbukkit v0.1.0
     Finished dev [optimized] profile [unoptimized + debuginfo] in 39.24s
 ```
 
@@ -490,7 +500,8 @@ $ cargo build
 ### Common Issues
 
 **"Connection refused"**
-- Ensure server is running on 127.0.0.1:25565
+- Ensure the server is running and listening on `0.0.0.0:25565`
+- For external connections, check the host firewall and router TCP port forwarding
 - Check for port conflicts: `netstat -an | findstr 25565`
 
 **"Chunk not loading"**
@@ -617,7 +628,7 @@ Server is pre-generating spawn area. Wait for "World initialization complete" me
 Update Rust: `rustup update`. Cranelift backend requires recent toolchain.
 
 ### Port 25565 already in use
-Change bind address in `src/core/server.rs` line 27, or kill process using port.
+Stop the process using the port, or change `SERVER_PORT` in `crates/rustbukkit_bin/src/consts.rs` and update your firewall and port forwarding rules.
 
 ---
 
@@ -635,4 +646,4 @@ See repository for license information.
 
 **Last Updated**: January 5, 2026  
 **Version**: 0.1.0 (Alpha)  
-**Repository**: https://github.com/ConnerAdamsMaine/RustCraft-Server
+**Repository**: https://github.com/ConnerAdamsMaine/RustBukkit-Server
