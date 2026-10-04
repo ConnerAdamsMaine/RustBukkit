@@ -1,27 +1,28 @@
 # RustBukkit
 
-A high-performance Minecraft server implementation written in Rust, featuring protocol compliance, efficient chunk management, and realistic terrain generation.
+A Rust Minecraft server implementation. The active server path is an offline-mode Minecraft 1.19.2 flat-world milestone.
 
-**Status**: Active development | **Minecraft Version**: 1.21.7 | **Language**: Rust 1.70+
+**Status**: Vanilla 1.19.2 flat-world connection verified; active development | **Configured version**: 1.19.2
 
 ## Quick Start
 
 ### Prerequisites
-- Rust 1.70+ ([Install](https://rustup.rs/))
-- A Minecraft 1.21.7 client
+
+- The Rust nightly toolchain specified in `rust-toolchain.toml`
+- A Minecraft Java Edition 1.19.2 client for the manual acceptance test
 
 ### Build & Run
 ```bash
-# Development build (faster compilation)
-cargo build
-cargo run
-
-# Release build (optimized)
-cargo build --release
-./target/release/rustbukkit
+cargo check --workspace
+cargo test --workspace
+cargo run -p rustbukkit_bin
 ```
 
-The server listens on all IPv4 interfaces (`0.0.0.0:25565`). On the same computer, connect to `localhost:25565`. Other computers on your network can connect to the server's local IP address on port `25565`.
+Run these commands from the repository root. Edit `server.conf` to select the bind address and exact Minecraft version. The current version registry supports only `mcVersion = "1.19.2"` and requires `onlineMode = false`. The default bind address is `0.0.0.0:25565`; on the same computer, connect to `localhost:25565`.
+
+For the manual milestone check, add the server to the 1.19.2 multiplayer list, connect, verify the grass surface at Y=63 and player feet at Y=64, look around and move, stay connected for at least 60 seconds, then disconnect and reconnect. A different client protocol should receive a version-specific login disconnect.
+
+Player locations are saved by offline UUID in `world/playerdata/` when a connection ends and restored on reconnect, including after a server restart. A player connecting for the first time starts at spawn.
 
 For connections from the internet, allow inbound TCP port `25565` in the server computer's firewall and forward TCP port `25565` on your router to that computer's local IP address. Give players your public IP address or a domain pointing to it. `0.0.0.0` is only the bind address; players cannot use it as the server address.
 
@@ -35,7 +36,9 @@ The current login flow does not verify Minecraft accounts. Anyone who can reach 
 
 ---
 
-## Features
+## Legacy implementation notes
+
+The sections below describe older subsystems retained in the repository. They are not claims about the active 1.19.2 server path.
 
 ### Networking & Protocol
 - **Full Minecraft 1.21.7 Protocol Support**: Handshake, Login, Configuration, and Play states

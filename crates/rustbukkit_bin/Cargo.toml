@@ -15,6 +15,9 @@ dev-sdk = [  ]
 
 # Child crates
 rustbukkit_config = { path = "../rustbukkit_config" }
+rustbukkit_decoding = { path = "../rustbukkit_decoding" }
+rustbukkit_encoding = { path = "../rustbukkit_encoding" }
+rustbukkit_protocol = { path = "../rustbukkit_protocol" }
 
 # General dependencies
 anyhow             = { workspace = true } # Fine; binary application error handling.
@@ -25,7 +28,7 @@ parking_lot        = { workspace = true } # System; Required for server running 
 serde_json         = { workspace = true } # Later; move to decoding crate and encoding crate as project-level deps.
 thiserror          = { workspace = true } # Refactor; Library style error handling, refactor.
 tracing            = { workspace = true } # Required; For logging in all/most crates
-tracing-subscriber = { workspace = true } # Required; For logging in all/most crates
+tracing-subscriber = { workspace = true, features = [ "env-filter" ] } # Required; For logging in all/most crates
 uuid               = { workspace = true } # Later; move to decoding crate and encoding crate as project-level deps.
 rayon              = { workspace = true } # System; Required here unless moved to 'system' style architecture and moved to sep. crate
 

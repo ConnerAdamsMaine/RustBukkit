@@ -1,0 +1,12 @@
+[package]
+name = "rustbukkit_protocol"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rustbukkit_decoding = { path = "../rustbukkit_decoding" }
+rustbukkit_encoding = { path = "../rustbukkit_encoding" }
+rustbukkit_chunks = { path = "../rustbukkit_chunks" }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

@@ -9,6 +9,7 @@ members = [
   "crates/rustbukkit_decoding",
   "crates/rustbukkit_encoding",
   "crates/rustbukkit_pool",
+  "crates/rustbukkit_protocol",
   "crates/rustbukkit_sdk",
 ]
 exclude = [

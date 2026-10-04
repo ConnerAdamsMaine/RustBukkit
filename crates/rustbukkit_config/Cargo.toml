@@ -8,6 +8,9 @@ name = "rustbukkit_config"
 path = "src/lib.rs"
 
 [dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml = "0.8"
 
 
 # Lint levels / priorities/priority
