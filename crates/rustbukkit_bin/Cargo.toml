@@ -15,13 +15,13 @@ dev-sdk = [  ]
 
 # Child crates
 rustbukkit_config = { path = "../rustbukkit_config" }
+rustbukkit_chunks = { path = "../rustbukkit_chunks" }
+rustbukkit_inventory = { path = "../rustbukkit_inventory" }
 rustbukkit_decoding = { path = "../rustbukkit_decoding" }
 rustbukkit_encoding = { path = "../rustbukkit_encoding" }
 rustbukkit_protocol = { path = "../rustbukkit_protocol" }
-
 # General dependencies
 anyhow             = { workspace = true } # Fine; binary application error handling.
-bincode            = { workspace = true } # Later; move to decoding crate and encoding crate as project-level deps.
 bytes              = { workspace = true } # Later; move to decoding crate and encoding crate as project-level deps.
 md5                = { workspace = true } # Later; move to decoding crate and encoding crate as project-level deps.
 parking_lot        = { workspace = true } # System; Required for server running (less moved to 'system' style architecture and moved to sep. crate
@@ -30,18 +30,15 @@ thiserror          = { workspace = true } # Refactor; Library style error handli
 tracing            = { workspace = true } # Required; For logging in all/most crates
 tracing-subscriber = { workspace = true, features = [ "env-filter" ] } # Required; For logging in all/most crates
 uuid               = { workspace = true } # Later; move to decoding crate and encoding crate as project-level deps.
-rayon              = { workspace = true } # System; Required here unless moved to 'system' style architecture and moved to sep. crate
-
-dashmap = { workspace = true }
-
-# System; Required here unless moved to 'system' style architecture and moved to sep. crate
-futures = { workspace = true, features = [ "bilock", "compat", "io-compat", "thread-pool", "unstable", "write-all-vectored" ] } # 
 # Later; move to decoding crate and encoding crate as project-level deps
 serde = { workspace = true, features = [ "derive" ] }
 # Later; move to decoding crate and encoding crate as project-level deps
 smallvec = { workspace = true, features = [ "const_generics", "union", "specialization", "const_new", "write", "serde" ] }
 # Required here unless moved to 'system' style architecture and moved to sep. crate
 tokio = { workspace = true, features = [ "full" ] }
+
+[dev-dependencies]
+rustbukkit_protocol = { path = "../rustbukkit_protocol", features = ["legacy-test-fixture"] }
 
 
 # Lint levels / priorities/priority

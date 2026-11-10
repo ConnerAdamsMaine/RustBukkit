@@ -10,3 +10,4 @@ path = "src/lib.rs"
 
 
 [dependencies]
+parking_lot = { workspace = true }

@@ -1,0 +1,67 @@
+ = Get-Content 'crates/rustbukkit_bin/src/session.rs' -Raw
+
+# Add imports after world_persistence
+ =  -replace 'use crate::world_persistence::WorldStore;
+', 'use crate::world_persistence::WorldStore;
+use rustbukkit_chunks::{BlockKind, BlockPos, World};\r\nuse rustbukkit_protocol::encode_block_update;\r\n'
+
+# Add handler before offline_uuid
+ = @'
+/// Sends a block update packet to the client and broadcasts a block event
+async fn handle_block_change(
+    connection: &mut Connection,
+    version: ''static dyn VersionPack,
+    world: &World,
+    session_registry: &SessionRegistry,
+    block_events: &broadcast::Sender<BlockEvent>,
+    position: &PlayerLocation,
+    block_pos: BlockPos,
+    new_block: BlockKind,
+    session_uuid: Uuid,
+) -> Result<()> {
+    // Get the current block state ID
+    let current_block = world.get_block(block_pos);
+    let block_state_id = match new_block {
+        BlockKind::Air => 0,
+        BlockKind::Bedrock => 3,
+        BlockKind::Dirt => 4,
+        BlockKind::GrassBlock => 5,
+        BlockKind::Sand => 6,
+        BlockKind::Stone => 1,
+        BlockKind::Cobblestone => 7,
+        BlockKind::Water => 2,
+    };
+
+    // Apply the block change atomically
+    if world.set_block_if(block_pos, current_block, new_block) {
+        // Send BlockUpdate to the player
+        if let Ok(payload) = encode_block_update(block_pos, block_state_id) {
+            connection
+                .write_frame(version.clientbound_id(ClientboundPacket::BlockUpdate), &payload)
+                .await?;
+        }
+
+        // Broadcast block event to other players
+        let event = match new_block {
+            BlockKind::Air => BlockEvent::Broken {
+                position: (block_pos.x, block_pos.y, block_pos.z),
+                entity_id: None,
+            },
+            _ => BlockEvent::Placed {
+                position: (block_pos.x, block_pos.y, block_pos.z),
+                block: block_state_id,
+                entity_id: None,
+            },
+        };
+        let _ = block_events.send(event);
+    }
+
+    Ok(())
+}
+
+'@
+
+ =  -replace 'fn offline_uuid\(username: &str\) -> Uuid {',  + 'fn offline_uuid(username: &str) -> Uuid {'
+
+[System.IO.File]::WriteAllText('crates/rustbukkit_bin/src/session.rs', )
+Write-Host 'Imports and handler added'

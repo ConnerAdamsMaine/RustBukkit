@@ -4,10 +4,20 @@ pub enum BlockKind {
     Bedrock,
     Dirt,
     GrassBlock,
+    Stone,
+    Cobblestone,
+    Sand,
+    Water,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FlatWorld;
+
+impl BlockKind {
+    pub fn is_solid(self) -> bool {
+        !matches!(self, Self::Air | Self::Water)
+    }
+}
 
 impl FlatWorld {
     pub const HEIGHT: i32 = 384;

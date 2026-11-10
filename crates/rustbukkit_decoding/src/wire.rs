@@ -7,6 +7,8 @@ pub enum WireError {
     Truncated,
     #[error("malformed VarInt")]
     InvalidVarInt,
+    #[error("malformed VarLong")]
+    InvalidVarLong,
     #[error("negative or oversized string length")]
     InvalidStringLength,
     #[error("invalid UTF-8 string")]
@@ -60,6 +62,21 @@ impl<'a> Reader<'a> {
         let (value, count) = partial_varint(&self.bytes[self.offset..])?.ok_or(WireError::Truncated)?;
         self.offset += count;
         Ok(value)
+    }
+
+    pub fn varlong(&mut self) -> Result<i64, WireError> {
+        let mut value = 0u64;
+        for index in 0..10 {
+            let byte = self.u8()?;
+            if index == 9 && byte & 0xfe != 0 {
+                return Err(WireError::InvalidVarLong);
+            }
+            value |= u64::from(byte & 0x7f) << (index * 7);
+            if byte & 0x80 == 0 {
+                return Ok(value as i64);
+            }
+        }
+        Err(WireError::InvalidVarLong)
     }
 
     pub fn u8(&mut self) -> Result<u8, WireError> {
@@ -167,5 +184,23 @@ mod tests {
             Reader::new(&[0xff, 0xff, 0xff, 0xff, 0x0f]).string(32),
             Err(WireError::InvalidStringLength)
         );
+        assert_eq!(Reader::new(&[0x80]).varlong(), Err(WireError::Truncated));
+        assert_eq!(Reader::new(&[0xff; 10]).varlong(), Err(WireError::InvalidVarLong));
+    }
+
+    #[test]
+    fn decodes_varlong_bool_and_signed_position_fixtures() {
+        assert_eq!(Reader::new(&[0xac, 0x02]).varlong().unwrap(), 300);
+        assert_eq!(
+            Reader::new(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01])
+                .varlong()
+                .unwrap(),
+            -1
+        );
+        assert!(!Reader::new(&[0]).bool().unwrap());
+        assert!(Reader::new(&[1]).bool().unwrap());
+        assert_eq!(Reader::new(&[2]).bool(), Err(WireError::InvalidBool(2)));
+        let packed = [0xff, 0xff, 0xff, 0xc0, 0x00, 0x00, 0x20, 0x3f];
+        assert_eq!(Reader::new(&packed).position().unwrap(), (-1, 63, 2));
     }
 }

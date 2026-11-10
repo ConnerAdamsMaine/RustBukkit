@@ -19,23 +19,36 @@ pub enum ConfigError {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawConfig {
-    mc_version:          String,
-    bind:                String,
-    online_mode:         bool,
-    max_players:         u32,
-    view_distance:       u8,
-    simulation_distance: u8,
-    motd:                String,
+    mc_version:                  String,
+    bind:                        String,
+    online_mode:                 bool,
+    max_players:                 u32,
+    view_distance:               u8,
+    simulation_distance:         u8,
+    motd:                        String,
+    #[serde(default = "default_keepalive_interval")]
+    keep_alive_interval_seconds: u64,
+    #[serde(default = "default_connection_timeout")]
+    connection_timeout_seconds:  u64,
+}
+
+const fn default_keepalive_interval() -> u64 {
+    10
+}
+const fn default_connection_timeout() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
-    pub mc_version:          String,
-    pub bind:                SocketAddr,
-    pub max_players:         u32,
-    pub view_distance:       u8,
-    pub simulation_distance: u8,
-    pub motd:                String,
+    pub mc_version:                  String,
+    pub bind:                        SocketAddr,
+    pub max_players:                 u32,
+    pub view_distance:               u8,
+    pub simulation_distance:         u8,
+    pub motd:                        String,
+    pub keep_alive_interval_seconds: u64,
+    pub connection_timeout_seconds:  u64,
 }
 
 impl ServerConfig {
@@ -62,6 +75,16 @@ impl ServerConfig {
         if raw.motd.len() > 32767 {
             return Err(ConfigError::Invalid("motd is too long".into()));
         }
+        if !(1..=300).contains(&raw.keep_alive_interval_seconds) {
+            return Err(ConfigError::Invalid("keepAliveIntervalSeconds must be between 1 and 300".into()));
+        }
+        if !(2..=600).contains(&raw.connection_timeout_seconds)
+            || raw.connection_timeout_seconds <= raw.keep_alive_interval_seconds
+        {
+            return Err(ConfigError::Invalid(
+                "connectionTimeoutSeconds must exceed keepAliveIntervalSeconds and be at most 600".into(),
+            ));
+        }
         let bind = raw
             .bind
             .parse()
@@ -73,6 +96,8 @@ impl ServerConfig {
             view_distance: raw.view_distance,
             simulation_distance: raw.simulation_distance,
             motd: raw.motd,
+            keep_alive_interval_seconds: raw.keep_alive_interval_seconds,
+            connection_timeout_seconds: raw.connection_timeout_seconds,
         })
     }
 }
@@ -94,5 +119,11 @@ mod tests {
     fn rejects_online_mode_and_invalid_distance() {
         assert!(ServerConfig::parse(&VALID.replace("onlineMode = false", "onlineMode = true")).is_err());
         assert!(ServerConfig::parse(&VALID.replace("viewDistance = 4", "viewDistance = 1")).is_err());
+        assert!(
+            ServerConfig::parse(
+                &(VALID.to_owned() + "keepAliveIntervalSeconds = 30\nconnectionTimeoutSeconds = 10\n")
+            )
+            .is_err()
+        );
     }
 }

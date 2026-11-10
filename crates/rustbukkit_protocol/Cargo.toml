@@ -3,10 +3,18 @@ name = "rustbukkit_protocol"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+legacy-test-fixture = []
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
 [dependencies]
 rustbukkit_decoding = { path = "../rustbukkit_decoding" }
 rustbukkit_encoding = { path = "../rustbukkit_encoding" }
 rustbukkit_chunks = { path = "../rustbukkit_chunks" }
+rustbukkit_inventory = { path = "../rustbukkit_inventory" }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }

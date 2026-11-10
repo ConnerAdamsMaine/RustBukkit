@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::Writer;
 
-pub const MAX_PACKET_LENGTH: usize = 2 * 1024 * 1024;
+pub const MAX_PACKET_LENGTH: usize = (1 << 21) - 1;
 
 #[derive(Debug, Error)]
 pub enum FrameEncodeError {
@@ -23,7 +23,7 @@ pub fn encode_frame(id: i32, payload: &[u8]) -> Result<Vec<u8>, FrameEncodeError
     if length > MAX_PACKET_LENGTH {
         return Err(FrameEncodeError::TooLarge(length));
     }
-    let mut frame = Writer::with_capacity(5 + length);
+    let mut frame = Writer::with_capacity(3 + length);
     frame.varint(length as i32);
     frame.raw(&id_bytes);
     frame.raw(payload);
@@ -32,10 +32,21 @@ pub fn encode_frame(id: i32, payload: &[u8]) -> Result<Vec<u8>, FrameEncodeError
 
 #[cfg(test)]
 mod tests {
-    use super::encode_frame;
+    use super::{FrameEncodeError, encode_frame};
 
     #[test]
     fn frame_length_includes_id_and_payload() {
         assert_eq!(encode_frame(0x80, &[0xaa, 0xbb]).unwrap(), [4, 0x80, 1, 0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn encodes_the_largest_three_byte_frame_and_rejects_the_next_length() {
+        let mut payload = vec![0xab; 2_097_150];
+        let frame = encode_frame(1, &payload).unwrap();
+        assert_eq!(&frame[..4], &[0xff, 0xff, 0x7f, 0x01]);
+        assert_eq!(frame.len(), 3 + 2_097_151);
+
+        payload.push(0xab);
+        assert!(matches!(encode_frame(1, &payload), Err(FrameEncodeError::TooLarge(2_097_152))));
     }
 }

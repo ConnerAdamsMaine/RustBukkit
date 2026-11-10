@@ -28,6 +28,18 @@ impl Writer {
         }
     }
 
+    pub fn varlong(&mut self, value: i64) {
+        let mut value = value as u64;
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            self.bytes.push(if value == 0 { byte } else { byte | 0x80 });
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
     pub fn u8(&mut self, value: u8) {
         self.bytes.push(value);
     }
@@ -121,5 +133,20 @@ mod tests {
             ]
             .concat()
         );
+    }
+
+    #[test]
+    fn varlong_bool_and_position_match_fixed_bytes() {
+        let mut writer = Writer::new();
+        writer.varlong(300);
+        writer.varlong(-1);
+        writer.bool(false);
+        writer.bool(true);
+        writer.position(-1, 63, 2);
+        let mut expected = vec![0xac, 0x02];
+        expected.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]);
+        expected.extend_from_slice(&[0, 1]);
+        expected.extend_from_slice(&[0xff, 0xff, 0xff, 0xc0, 0x00, 0x00, 0x20, 0x3f]);
+        assert_eq!(writer.finish(), expected);
     }
 }

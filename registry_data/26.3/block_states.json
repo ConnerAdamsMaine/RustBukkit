@@ -1,0 +1,10 @@
+{
+ "air": 0,
+ "bedrock": 88,
+ "dirt": 10,
+ "grass_block": 9,
+ "stone": 1,
+ "cobblestone": 14,
+ "sand": 121,
+ "water": 89
+}

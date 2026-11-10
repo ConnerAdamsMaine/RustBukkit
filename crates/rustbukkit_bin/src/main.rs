@@ -1,8 +1,5 @@
-mod player_location;
-mod server;
-mod session;
-
 use anyhow::Result;
+use rustbukkit_bin::server;
 use rustbukkit_config::ServerConfig;
 use rustbukkit_protocol::VersionRegistry;
 
@@ -21,4 +18,24 @@ async fn main() -> Result<()> {
     let config = ServerConfig::load(std::path::Path::new("server.conf"))?;
     let version = VersionRegistry::select(&config.mc_version)?;
     server::run(config, version).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use rustbukkit_config::ServerConfig;
+    use rustbukkit_protocol::VersionRegistry;
+
+    #[test]
+    fn checked_in_configuration_selects_26_3_networking() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let config = ServerConfig::load(&root.join("server.conf")).unwrap();
+        let version = VersionRegistry::select(&config.mc_version).unwrap();
+        assert_eq!(version.protocol_version(), 777);
+    }
 }

@@ -3,7 +3,7 @@ use thiserror::Error;
 
 use crate::wire::{WireError, partial_varint};
 
-pub const MAX_PACKET_LENGTH: usize = 2 * 1024 * 1024;
+pub const MAX_PACKET_LENGTH: usize = (1 << 21) - 1;
 const MAX_RECEIVE_BUFFER: usize = 2 * MAX_PACKET_LENGTH + 10;
 
 #[derive(Debug, Error)]
@@ -43,7 +43,11 @@ impl FrameDecoder {
     }
 
     pub fn next_frame(&mut self) -> Result<Option<Frame>, FrameError> {
-        let Some((length, prefix_len)) = partial_varint(&self.buffer)? else {
+        let prefix = &self.buffer[..self.buffer.len().min(3)];
+        let Some((length, prefix_len)) = partial_varint(prefix)? else {
+            if prefix.len() == 3 {
+                return Err(WireError::InvalidVarInt.into());
+            }
             return Ok(None);
         };
         if length <= 0 || length as usize > MAX_PACKET_LENGTH {
@@ -74,6 +78,7 @@ impl FrameDecoder {
 #[cfg(test)]
 mod tests {
     use super::{FrameDecoder, FrameError};
+    use crate::wire::WireError;
 
     fn decode_in_chunks(input: &[u8], width: usize) -> Vec<(i32, Vec<u8>)> {
         let mut decoder = FrameDecoder::new();
@@ -111,6 +116,31 @@ mod tests {
         assert!(matches!(decoder.next_frame(), Err(FrameError::InvalidLength(0))));
         let mut decoder = FrameDecoder::new();
         decoder.feed(&[0xff, 0xff, 0xff, 0xff, 0x0f]).unwrap();
-        assert!(matches!(decoder.next_frame(), Err(FrameError::InvalidLength(-1))));
+        assert!(matches!(decoder.next_frame(), Err(FrameError::Wire(WireError::InvalidVarInt))));
+    }
+
+    #[test]
+    fn rejects_frame_lengths_wider_than_three_bytes_without_waiting_for_more_data() {
+        let mut decoder = FrameDecoder::new();
+        decoder.feed(&[0x80, 0x80]).unwrap();
+        assert!(decoder.next_frame().unwrap().is_none());
+        decoder.feed(&[0x80]).unwrap();
+        assert!(matches!(decoder.next_frame(), Err(FrameError::Wire(WireError::InvalidVarInt))));
+    }
+
+    #[test]
+    fn accepts_the_largest_three_byte_frame_length() {
+        let mut input = vec![0xff, 0xff, 0x7f, 0x01];
+        input.resize(3 + 2_097_151, 0xab);
+        let mut decoder = FrameDecoder::new();
+        for byte in &input[..3] {
+            decoder.feed(&[*byte]).unwrap();
+            assert!(decoder.next_frame().unwrap().is_none());
+        }
+        decoder.feed(&input[3..]).unwrap();
+        let frame = decoder.next_frame().unwrap().unwrap();
+        assert_eq!(frame.id, 1);
+        assert_eq!(frame.payload.len(), 2_097_150);
+        assert!(decoder.is_empty());
     }
 }

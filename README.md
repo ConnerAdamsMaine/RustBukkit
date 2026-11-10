@@ -1,15 +1,17 @@
 # RustBukkit
 
-A Rust Minecraft server implementation. The active server path is an offline-mode Minecraft 1.19.2 flat-world milestone.
+A Rust-native Minecraft Java Edition server project targeting 26.3. Protocol 777 status, offline login, configuration negotiation, and a functional Play state are implemented: a session receives Join Game, the world spawn, 26.3 chunk data with light, and authoritative block updates, and its position is persisted on disconnect.
 
-**Status**: Vanilla 1.19.2 flat-world connection verified; active development | **Configured version**: 1.19.2
+Multiplayer world synchronization (two sessions observing each other's block changes) and restart-safe player state are covered by in-process end-to-end tests. Player-entity visibility (Player Info / Spawn Player), registries beyond the known-pack shortcut, inventory synchronization, and verification against an unmodified 26.3 client are still outstanding.
+
+**Target and configured version**: Minecraft Java Edition 26.3 | **Network protocol**: 777 | **Status**: implementation in progress
 
 ## Quick Start
 
 ### Prerequisites
 
 - The Rust nightly toolchain specified in `rust-toolchain.toml`
-- A Minecraft Java Edition 1.19.2 client for the manual acceptance test
+- A Minecraft Java Edition 26.3 client for future interoperability testing
 
 ### Build & Run
 ```bash
@@ -18,11 +20,13 @@ cargo test --workspace
 cargo run -p rustbukkit_bin
 ```
 
-Run these commands from the repository root. Edit `server.conf` to select the bind address and exact Minecraft version. The current version registry supports only `mcVersion = "1.19.2"` and requires `onlineMode = false`. The default bind address is `0.0.0.0:25565`; on the same computer, connect to `localhost:25565`.
+Run these commands from the repository root. `server.conf` selects `mcVersion = "26.3"` and requires `onlineMode = false`. The default bind address is `0.0.0.0:25565`; on the same computer, use `localhost:25565` for a status check.
 
-For the manual milestone check, add the server to the 1.19.2 multiplayer list, connect, verify the grass surface at Y=63 and player feet at Y=64, look around and move, stay connected for at least 60 seconds, then disconnect and reconnect. A different client protocol should receive a version-specific login disconnect.
+The 26.3 server completes Configuration and enters Play. It does not yet send Registry Data, so it relies on the client's known-pack (`minecraft:core` 26.3) shortcut. Gameplay currently supports joining, chunk streaming around the player, movement validation, block placement/breaking with broadcast to every session, keepalives, and player-state persistence; it is not yet vanilla gameplay parity.
 
-Player locations are saved by offline UUID in `world/playerdata/` when a connection ends and restored on reconnect, including after a server restart. A player connecting for the first time starts at spawn.
+The 1.19.2 codec is retained only as a fixture for existing gameplay tests and cannot be selected by the server. Its persistence coverage is not yet a 26.3 gameplay capability.
+
+`keepAliveIntervalSeconds` and `connectionTimeoutSeconds` in `server.conf` control the heartbeat and timeout.
 
 For connections from the internet, allow inbound TCP port `25565` in the server computer's firewall and forward TCP port `25565` on your router to that computer's local IP address. Give players your public IP address or a domain pointing to it. `0.0.0.0` is only the bind address; players cannot use it as the server address.
 
@@ -38,7 +42,7 @@ The current login flow does not verify Minecraft accounts. Anyone who can reach 
 
 ## Legacy implementation notes
 
-The sections below describe older subsystems retained in the repository. They are not claims about the active 1.19.2 server path.
+The sections below describe older subsystems retained in the repository. They are not claims about 26.3 support.
 
 ### Networking & Protocol
 - **Full Minecraft 1.21.7 Protocol Support**: Handshake, Login, Configuration, and Play states

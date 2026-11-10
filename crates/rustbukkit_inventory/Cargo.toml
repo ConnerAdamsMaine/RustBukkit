@@ -1,0 +1,14 @@
+[package]
+name = "rustbukkit_inventory"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "rustbukkit_inventory"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
