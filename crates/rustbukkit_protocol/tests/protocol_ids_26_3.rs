@@ -73,6 +73,8 @@ fn clientbound_ids_match_the_generated_26_3_report() {
         (ClientboundPacket::SimulationDistance, "set_simulation_distance"),
         (ClientboundPacket::ServerData, "server_data"),
         (ClientboundPacket::UpdateHealth, "set_health"),
+        (ClientboundPacket::HurtAnimation, "hurt_animation"),
+        (ClientboundPacket::EntityEvent, "entity_event"),
         (ClientboundPacket::UpdateTime, "set_time"),
         (ClientboundPacket::PlayerInfo, "player_info_update"),
         (ClientboundPacket::SpawnEntity, "add_entity"),
@@ -83,6 +85,11 @@ fn clientbound_ids_match_the_generated_26_3_report() {
         (ClientboundPacket::RemoveEntities, "remove_entities"),
         (ClientboundPacket::Respawn, "respawn"),
         (ClientboundPacket::BlockUpdate, "block_update"),
+        (ClientboundPacket::ContainerClose, "container_close"),
+        (ClientboundPacket::ContainerSetContent, "container_set_content"),
+        (ClientboundPacket::ContainerSetSlot, "container_set_slot"),
+        (ClientboundPacket::SetCursorItem, "set_cursor_item"),
+        (ClientboundPacket::SetHeldSlot, "set_held_slot"),
     ];
     for (packet, name) in cases {
         assert_eq!(

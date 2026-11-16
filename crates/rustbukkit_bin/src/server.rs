@@ -12,7 +12,7 @@ use tracing::{error, info};
 
 use crate::player_location::PlayerLocationStore;
 use crate::session::{self, BlockEvent};
-use crate::session_registry::SessionRegistry;
+use crate::session_registry::{PresenceEvent, SessionRegistry};
 use crate::world_persistence::WorldStore;
 
 pub async fn run(config: ServerConfig, version: &'static dyn VersionPack) -> Result<()> {
@@ -52,17 +52,35 @@ pub async fn serve(
     let world_store = Arc::new(WorldStore::new(world_root));
     let world = Arc::new(world_store.load().await?);
     let (block_events, _) = broadcast::channel::<BlockEvent>(1024);
+    let (presence_events, _) = broadcast::channel::<PresenceEvent>(1024);
     let session_uuid = uuid::Uuid::new_v4();
     let mut sessions = JoinSet::new();
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut tick_count = 0u64;
+    let mut slowest_tick = Duration::ZERO;
 
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 let started = std::time::Instant::now();
                 registry.tick(&world);
-                tracing::trace!(duration = ?started.elapsed(), "server gameplay tick");
+                let elapsed = started.elapsed();
+                slowest_tick = slowest_tick.max(elapsed);
+                tick_count += 1;
+                if elapsed >= Duration::from_millis(50) {
+                    tracing::warn!(duration = ?elapsed, "gameplay tick overran the 50 ms budget");
+                }
+                if tick_count.is_multiple_of(200) {
+                    tracing::info!(
+                        ticks = tick_count,
+                        slowest_tick = ?slowest_tick,
+                        players = registry.player_count(),
+                        "tick latency summary (last 200 ticks)"
+                    );
+                    slowest_tick = Duration::ZERO;
+                }
+                tracing::trace!(duration = ?elapsed, "server gameplay tick");
             }
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
@@ -73,6 +91,7 @@ pub async fn serve(
                 let registry = Arc::clone(&registry);
                 let world = Arc::clone(&world);
                 let block_events = block_events.clone();
+                let presence_events = presence_events.clone();
                 let shutdown = shutdown.clone();
                 sessions.spawn(async move {
                     let mut connection = Connection::new(stream, peer_addr);
@@ -86,6 +105,7 @@ pub async fn serve(
                         &registry,
                         &world,
                         &block_events,
+                        &presence_events,
                         shutdown,
                     )
                     .await

@@ -2,6 +2,7 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use rustbukkit_inventory::Inventory;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 use uuid::Uuid;
@@ -14,6 +15,18 @@ struct StoredPlayer {
     username:  String,
     dimension: String,
     location:  PlayerLocation,
+    #[serde(default = "empty_inventory")]
+    inventory: Inventory,
+}
+
+fn empty_inventory() -> Inventory {
+    Inventory::empty(0).expect("hotbar selection 0 is always valid")
+}
+
+/// Everything a session needs to resume a returning player.
+pub struct PlayerSnapshot {
+    pub location:  PlayerLocation,
+    pub inventory: Inventory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -75,30 +88,61 @@ impl PlayerLocationStore {
         self.root.join(format!("{uuid}.json"))
     }
 
-    pub async fn load(&self, uuid: Uuid, username: &str, spawn: PlayerLocation) -> Result<PlayerLocation> {
+    pub async fn load(&self, uuid: Uuid, username: &str, spawn: PlayerLocation) -> Result<PlayerSnapshot> {
         let path = self.path(uuid);
         let bytes = match tokio::fs::read(&path).await {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(spawn),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return Ok(PlayerSnapshot {
+                    location:  spawn,
+                    inventory: empty_inventory(),
+                });
+            }
             Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
         };
-        let location = match serde_json::from_slice::<StoredPlayer>(&bytes) {
+        let saved_player = match serde_json::from_slice::<StoredPlayer>(&bytes) {
             Ok(saved) if saved.uuid == uuid && saved.username == username && saved.dimension == OVERWORLD => {
-                Some(saved.location)
+                Some(saved)
             }
             Ok(_) => None,
-            Err(_) => serde_json::from_slice::<PlayerLocation>(&bytes).ok(), // legacy location-only file
+            Err(_) => {
+                serde_json::from_slice::<PlayerLocation>(&bytes)
+                    .ok()
+                    .map(|location| {
+                        StoredPlayer {
+                            uuid,
+                            username: username.to_owned(),
+                            dimension: OVERWORLD.to_owned(),
+                            location,
+                            inventory: empty_inventory(),
+                        }
+                    })
+            } // legacy location-only file
         };
-        match location {
-            Some(location) if location.is_valid() && location.y >= spawn.y - 512.0 => Ok(location),
+        match saved_player {
+            Some(saved) if saved.location.is_valid() && saved.location.y >= spawn.y - 512.0 => {
+                Ok(PlayerSnapshot {
+                    location:  saved.location,
+                    inventory: saved.inventory,
+                })
+            }
             _ => {
                 warn!("Invalid saved player location in {}; using spawn", path.display());
-                Ok(spawn)
+                Ok(PlayerSnapshot {
+                    location:  spawn,
+                    inventory: empty_inventory(),
+                })
             }
         }
     }
 
-    pub async fn save(&self, uuid: Uuid, username: &str, location: PlayerLocation) -> Result<()> {
+    pub async fn save(
+        &self,
+        uuid: Uuid,
+        username: &str,
+        location: PlayerLocation,
+        inventory: &Inventory,
+    ) -> Result<()> {
         tokio::fs::create_dir_all(&self.root)
             .await
             .with_context(|| format!("creating {}", self.root.display()))?;
@@ -108,6 +152,7 @@ impl PlayerLocationStore {
             username: username.to_owned(),
             dimension: OVERWORLD.to_owned(),
             location,
+            inventory: inventory.clone(),
         };
         let bytes = serde_json::to_vec(&saved)?;
         let temporary = self.root.join(format!("{uuid}.{}.tmp", Uuid::new_v4()));
@@ -126,6 +171,7 @@ impl PlayerLocationStore {
 
 #[cfg(test)]
 mod tests {
+    use rustbukkit_inventory::{ItemKind, ItemStack};
     use uuid::Uuid;
 
     use super::{PlayerLocation, PlayerLocationStore};
@@ -140,14 +186,22 @@ mod tests {
             .await
             .unwrap();
         let store = PlayerLocationStore::new(root.clone());
-        let mut location = store
+        let mut snapshot = store
             .load(uuid, "Traveler", PlayerLocation::spawn(64.0))
             .await
             .unwrap();
-        assert_eq!(location.x, 12.5);
-        location.yaw = 45.0;
-        location.selected_hotbar_slot = 2;
-        store.save(uuid, "Traveler", location).await.unwrap();
+        assert_eq!(snapshot.location.x, 12.5);
+        assert_eq!(snapshot.inventory.carried(), None);
+        snapshot.location.yaw = 45.0;
+        snapshot.location.selected_hotbar_slot = 2;
+        snapshot.inventory.set(
+            rustbukkit_inventory::InventorySlot::new(36).unwrap(),
+            Some(ItemStack::new(ItemKind::Dirt, 3).unwrap()),
+        );
+        store
+            .save(uuid, "Traveler", snapshot.location, &snapshot.inventory)
+            .await
+            .unwrap();
         let saved: serde_json::Value =
             serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
         assert_eq!(saved["uuid"], uuid.to_string());
@@ -155,13 +209,13 @@ mod tests {
         assert_eq!(saved["dimension"], "minecraft:overworld");
         assert_eq!(saved["location"]["yaw"], 45.0);
         assert_eq!(saved["location"]["selected_hotbar_slot"], 2);
-        assert_eq!(
-            store
-                .load(uuid, "Traveler", PlayerLocation::spawn(64.0))
-                .await
-                .unwrap(),
-            location
-        );
+        assert_eq!(saved["inventory"]["slots"][36]["count"], 3);
+        let reloaded = store
+            .load(uuid, "Traveler", PlayerLocation::spawn(64.0))
+            .await
+            .unwrap();
+        assert_eq!(reloaded.location, snapshot.location);
+        assert_eq!(reloaded.inventory.window_slot(36), Some(ItemStack::new(ItemKind::Dirt, 3).unwrap()));
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }

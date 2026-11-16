@@ -1,0 +1,173 @@
+{
+ "provenance": "Captured from the official Minecraft Java 26.3 server (versions/26.3/server-26.3.jar) by target/probe/dump.js; see registry_data/26.3/README.md.",
+ "login_success": "3f0ca0c89f163b8792fbb626b9a1bb990550726f626500302679465c7a470d903a3b1644418165",
+ "server_data_plain_motd": "08000c56616e696c6c6150726f626500",
+ "play_login_flat": "000000020003136d696e6563726166743a6f766572776f726c64116d696e6563726166743a7468655f656e64146d696e6563726166743a7468655f6e657468657205020200010000136d696e6563726166743a6f766572776f726c64077c00daebfb9f13000000010000c1ffffff0f0000",
+ "registry_ids": {
+  "plains_biome": 41,
+  "overworld_dimension_type": 0,
+  "overworld_world_clock": 0
+ },
+ "configuration_registries": [
+  {
+   "id": "minecraft:worldgen/biome",
+   "entries": 67,
+   "noData": true
+  },
+  {
+   "id": "minecraft:chat_type",
+   "entries": 7,
+   "noData": true
+  },
+  {
+   "id": "minecraft:trim_pattern",
+   "entries": 18,
+   "noData": true
+  },
+  {
+   "id": "minecraft:trim_material",
+   "entries": 11,
+   "noData": true
+  },
+  {
+   "id": "minecraft:wolf_variant",
+   "entries": 9,
+   "noData": true
+  },
+  {
+   "id": "minecraft:wolf_sound_variant",
+   "entries": 7,
+   "noData": true
+  },
+  {
+   "id": "minecraft:pig_variant",
+   "entries": 3,
+   "noData": true
+  },
+  {
+   "id": "minecraft:pig_sound_variant",
+   "entries": 3,
+   "noData": true
+  },
+  {
+   "id": "minecraft:frog_variant",
+   "entries": 3,
+   "noData": true
+  },
+  {
+   "id": "minecraft:cat_variant",
+   "entries": 11,
+   "noData": true
+  },
+  {
+   "id": "minecraft:cat_sound_variant",
+   "entries": 2,
+   "noData": true
+  },
+  {
+   "id": "minecraft:cow_sound_variant",
+   "entries": 2,
+   "noData": true
+  },
+  {
+   "id": "minecraft:cow_variant",
+   "entries": 3,
+   "noData": true
+  },
+  {
+   "id": "minecraft:chicken_sound_variant",
+   "entries": 2,
+   "noData": true
+  },
+  {
+   "id": "minecraft:chicken_variant",
+   "entries": 3,
+   "noData": true
+  },
+  {
+   "id": "minecraft:zombie_nautilus_variant",
+   "entries": 2,
+   "noData": true
+  },
+  {
+   "id": "minecraft:painting_variant",
+   "entries": 51,
+   "noData": true
+  },
+  {
+   "id": "minecraft:sulfur_cube_archetype",
+   "entries": 12,
+   "noData": true
+  },
+  {
+   "id": "minecraft:dimension_type",
+   "entries": 4,
+   "noData": true
+  },
+  {
+   "id": "minecraft:damage_type",
+   "entries": 51,
+   "noData": true
+  },
+  {
+   "id": "minecraft:banner_pattern",
+   "entries": 43,
+   "noData": true
+  },
+  {
+   "id": "minecraft:enchantment",
+   "entries": 43,
+   "noData": true
+  },
+  {
+   "id": "minecraft:jukebox_song",
+   "entries": 22,
+   "noData": true
+  },
+  {
+   "id": "minecraft:instrument",
+   "entries": 8,
+   "noData": true
+  },
+  {
+   "id": "minecraft:test_environment",
+   "entries": 1,
+   "noData": true
+  },
+  {
+   "id": "minecraft:test_instance",
+   "entries": 1,
+   "noData": true
+  },
+  {
+   "id": "minecraft:dialog",
+   "entries": 3,
+   "noData": true
+  },
+  {
+   "id": "minecraft:world_clock",
+   "entries": 2,
+   "noData": true
+  },
+  {
+   "id": "minecraft:timeline",
+   "entries": 4,
+   "noData": true
+  },
+  {
+   "id": "minecraft:decorated_pot_pattern",
+   "entries": 23,
+   "noData": true
+  },
+  {
+   "id": "minecraft:block_transformer",
+   "entries": 3,
+   "noData": true
+  },
+  {
+   "id": "minecraft:worldgen/block_state_provider",
+   "entries": 8,
+   "noData": true
+  }
+ ]
+}

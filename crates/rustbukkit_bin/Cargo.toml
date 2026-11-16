@@ -1,6 +1,6 @@
 [package]
 name    = "rustbukkit_bin"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [[bin]]
@@ -36,9 +36,6 @@ serde = { workspace = true, features = [ "derive" ] }
 smallvec = { workspace = true, features = [ "const_generics", "union", "specialization", "const_new", "write", "serde" ] }
 # Required here unless moved to 'system' style architecture and moved to sep. crate
 tokio = { workspace = true, features = [ "full" ] }
-
-[dev-dependencies]
-rustbukkit_protocol = { path = "../rustbukkit_protocol", features = ["legacy-test-fixture"] }
 
 
 # Lint levels / priorities/priority

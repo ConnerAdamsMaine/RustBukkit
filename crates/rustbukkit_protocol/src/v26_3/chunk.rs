@@ -4,6 +4,14 @@ use rustbukkit_chunks::{BlockKind, ChunkSnapshot, FlatWorld};
 use rustbukkit_encoding::Writer;
 use thiserror::Error;
 
+/// `minecraft:plains` in the 26.3 `worldgen/biome` network registry.
+///
+/// Extracted from the official server's configuration registry snapshot in
+/// `registry_data/26.3/golden_packets.json` and asserted by
+/// `tests/protocol_ids_26_3.rs`; entry 0 is `minecraft:badlands`, so the old
+/// hardcoded `0` made clients render every chunk as badlands.
+pub const PLAINS_BIOME_ID: i32 = 41;
+
 pub const FORGET_CHUNK_ID: i32 = 38;
 pub const LEVEL_CHUNK_WITH_LIGHT_ID: i32 = 46;
 pub const LIGHT_UPDATE_ID: i32 = 49;
@@ -144,18 +152,24 @@ impl LightData<'_> {
     }
 
     fn write(&self, writer: &mut Writer) {
+        // 26.3 wraps each mask in `ByteBufCodecs.BIT_SET`, which serializes
+        // `BitSet.toByteArray()`: VarInt byte length followed by little-endian
+        // bytes with trailing zeros trimmed. The older VarInt long-count + longs
+        // layout is rejected by an unmodified 26.3 client with
+        // "Failed to decode packet clientbound/minecraft:level_chunk_with_light".
         for mask in [
             self.sky_mask,
             self.block_mask,
             self.empty_sky_mask,
             self.empty_block_mask,
         ] {
-            if mask == 0 {
-                writer.varint(0);
-            } else {
-                writer.varint(1);
-                writer.i64(i64::from(mask));
-            }
+            let bytes = mask.to_le_bytes();
+            let len = bytes
+                .iter()
+                .rposition(|byte| *byte != 0)
+                .map_or(0, |index| index + 1);
+            writer.varint(len as i32);
+            writer.raw(&bytes[..len]);
         }
         for arrays in [self.sky_arrays, self.block_arrays] {
             writer.varint(arrays.len() as i32);
@@ -281,4 +295,28 @@ pub fn encode_chunk_with_light(
     writer.varint(0);
     light.write(&mut writer);
     Ok(writer.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{encode_light_update, full_skylight};
+
+    #[test]
+    fn light_masks_use_the_26_3_bitset_byte_array_encoding() {
+        let payload = encode_light_update(0, 0, &full_skylight()).unwrap();
+        let mut expected = vec![
+            0, 0, // x, z
+            4, 0xff, 0xff, 0xff, 0x03, // sky mask: 26 bits, little-endian bytes
+            0,    // block mask: empty
+            0,    // empty-sky mask: empty
+            4, 0xff, 0xff, 0xff, 0x03, // empty-block mask
+            26,   // sky light arrays
+        ];
+        for _ in 0..26 {
+            expected.extend_from_slice(&[0x80, 0x10]); // VarInt 2048
+            expected.extend_from_slice(&[0xff; 2048]);
+        }
+        expected.push(0); // block light arrays
+        assert_eq!(payload, expected);
+    }
 }

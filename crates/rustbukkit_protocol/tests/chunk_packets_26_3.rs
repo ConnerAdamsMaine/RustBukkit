@@ -120,9 +120,21 @@ fn chunk_encodes_heightmaps_sections_palettes_and_light_in_26_3_order() {
     assert_eq!(sections.remaining(), 0);
     assert_eq!(reader.varint().unwrap(), 0);
 
+    // 26.3 serializes each light mask as `BitSet.toByteArray()`: a VarInt byte
+    // length followed by little-endian bytes with trailing zeros trimmed.
     for mask in [((1 << 25) | 1), 1 << 1, 1 << 3, 1 << 4] {
-        assert_eq!(reader.varint().unwrap(), 1);
-        assert_eq!(reader.i64().unwrap() as u64, mask);
+        let len = reader.varint().unwrap() as usize;
+        let mut value = 0u64;
+        for byte in 0..len {
+            value |= u64::from(reader.u8().unwrap()) << (8 * byte);
+        }
+        let little_endian = (mask as u64).to_le_bytes();
+        let expected_len = little_endian
+            .iter()
+            .rposition(|byte| *byte != 0)
+            .map_or(0, |index| index + 1);
+        assert_eq!(len, expected_len);
+        assert_eq!(value, mask as u64);
     }
     assert_eq!(reader.varint().unwrap(), 2);
     for layer in &sky {

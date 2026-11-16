@@ -25,6 +25,8 @@ const MAX_KNOWN_PACKS: i32 = 64;
 // (`registry_data/26.3/packet_ids.json`); asserted by `tests/protocol_ids_26_3.rs`.
 pub const CLIENTBOUND_CUSTOM_PAYLOAD_ID: i32 = 1;
 pub const CLIENTBOUND_FINISH_CONFIGURATION_ID: i32 = 3;
+pub const CLIENTBOUND_REGISTRY_DATA_ID: i32 = 7;
+pub const CLIENTBOUND_UPDATE_TAGS_ID: i32 = 14;
 pub const CLIENTBOUND_UPDATE_ENABLED_FEATURES_ID: i32 = 13;
 pub const CLIENTBOUND_SELECT_KNOWN_PACKS_ID: i32 = 15;
 pub const SERVERBOUND_CLIENT_INFORMATION_ID: i32 = 0;
@@ -34,6 +36,45 @@ pub const SERVERBOUND_KEEP_ALIVE_ID: i32 = 4;
 pub const SERVERBOUND_PONG_ID: i32 = 5;
 pub const SERVERBOUND_SELECT_KNOWN_PACKS_ID: i32 = 7;
 pub const SERVERBOUND_ACCEPT_CODE_OF_CONDUCT_ID: i32 = 9;
+
+/// Configuration registry snapshot captured from the official 26.3 server.
+///
+/// Format: repeated `u32` big-endian payload length followed by that Registry
+/// Data payload. The bytes are protocol-derived data produced by the official
+/// data generator (`registry_data/26.3/README.md`), not Mojang code; replaying
+/// the snapshot keeps every network registry identifier (biome, dimension type,
+/// world clock, damage type, ...) identical to vanilla 26.3.
+static CONFIGURATION_REGISTRIES: &[u8] =
+    include_bytes!("../../../registry_data/26.3/configuration_registries.bin");
+
+/// Registry Data payloads in the official server's configuration order.
+///
+/// The leading identifier selects the registry; the client resolves registry
+/// indices in exactly this order.
+pub fn configuration_registry_packets() -> Vec<&'static [u8]> {
+    let mut packets = Vec::new();
+    let mut rest = CONFIGURATION_REGISTRIES;
+    while let Some((header, tail)) = rest.split_first_chunk::<4>() {
+        let len = u32::from_be_bytes(*header) as usize;
+        let Some((payload, tail)) = tail.split_at_checked(len) else {
+            break;
+        };
+        packets.push(payload);
+        rest = tail;
+    }
+    packets
+}
+
+/// Official 26.3 Configuration `update_tags` payload.
+///
+/// Registries such as `minecraft:sulfur_cube_archetype` reference item tags, and
+/// an unmodified client aborts configuration with "Missing tag" if the packet is
+/// absent. Captured from the official server; see `registry_data/26.3/README.md`.
+static CONFIGURATION_TAGS: &[u8] = include_bytes!("../../../registry_data/26.3/configuration_tags.bin");
+
+pub fn configuration_tags_packet() -> &'static [u8] {
+    CONFIGURATION_TAGS
+}
 
 pub fn initial_configuration_packets() -> Vec<(i32, Vec<u8>)> {
     let mut brand = Writer::new();

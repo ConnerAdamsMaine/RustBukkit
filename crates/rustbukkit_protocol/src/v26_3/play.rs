@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rustbukkit_chunks::BlockPos;
 use rustbukkit_decoding::{Reader, WireError};
-use rustbukkit_inventory::InventoryAction;
 use thiserror::Error;
 
 use crate::{BlockFace, DigAction, PlayInbound};
@@ -244,30 +243,28 @@ impl From<ServerboundPlay> for PlayInbound {
             }
             ServerboundPlay::ClientCommand(_) => PlayInbound::RespawnRequest,
             ServerboundPlay::ContainerClick {
-                container_id: _,
+                container_id,
                 state_id,
                 slot,
                 button,
                 input,
-                changed_slots,
+                changed_slots: _,
                 carried: _,
             } => {
-                let action = match (input, slot, button) {
-                    (ContainerInput::QuickMove, 9..=45, 0) => InventoryAction::DropOne(slot as u8),
-                    (ContainerInput::QuickMove, 9..=45, 1) => InventoryAction::DropStack(slot as u8),
-                    (ContainerInput::Pickup, -999, 0) => InventoryAction::DropCursorStack,
-                    (ContainerInput::Pickup, -999, 1) => InventoryAction::DropCursorOne,
-                    _ => InventoryAction::Rearrange,
-                };
-                let mut changes = Vec::new();
-                for (s, _item) in changed_slots {
-                    changes.push((s as u8, None)); // Simplified - would need proper conversion
-                }
                 PlayInbound::ClickContainer {
+                    container_id,
                     state_id,
-                    action,
-                    changes,
-                    carried: None,
+                    slot,
+                    button,
+                    mode: match input {
+                        ContainerInput::QuickMove => rustbukkit_inventory::ClickMode::QuickMove,
+                        ContainerInput::Swap => rustbukkit_inventory::ClickMode::Swap,
+                        ContainerInput::Clone => rustbukkit_inventory::ClickMode::Clone,
+                        ContainerInput::Throw => rustbukkit_inventory::ClickMode::Throw,
+                        ContainerInput::QuickCraft => rustbukkit_inventory::ClickMode::QuickCraft,
+                        ContainerInput::PickupAll => rustbukkit_inventory::ClickMode::PickupAll,
+                        ContainerInput::Pickup => rustbukkit_inventory::ClickMode::Pickup,
+                    },
                 }
             }
         }

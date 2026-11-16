@@ -137,6 +137,23 @@ pub enum EntityEvent {
     Remove { id: EntityId },
 }
 
+/// Server-authoritative combat outcome. Every session (victim included)
+/// subscribes so it can send the vanilla hurt/death clientbound feedback.
+#[derive(Debug, Clone)]
+pub enum CombatEvent {
+    Hurt {
+        victim:             PlayerSnapshot,
+        attacker_entity_id: i32,
+        /// Vanilla `hurtDir` camera-tilt yaw derived from the attacker position.
+        hurt_yaw:           f32,
+    },
+    Death {
+        victim:             PlayerSnapshot,
+        attacker_entity_id: i32,
+        hurt_yaw:           f32,
+    },
+}
+
 #[derive(Default)]
 struct EntityState {
     players:           HashMap<Uuid, PlayerSnapshot>,
@@ -175,6 +192,7 @@ pub struct EntityManager {
     tick:           AtomicU64,
     events:         broadcast::Sender<PresenceEvent>,
     entity_events:  broadcast::Sender<EntityEvent>,
+    combat_events:  broadcast::Sender<CombatEvent>,
 }
 
 pub type SessionRegistry = EntityManager;
@@ -183,12 +201,14 @@ impl Default for EntityManager {
     fn default() -> Self {
         let (events, _) = broadcast::channel(1024);
         let (entity_events, _) = broadcast::channel(1024);
+        let (combat_events, _) = broadcast::channel(1024);
         Self {
             state: Mutex::new(EntityState::default()),
             next_entity_id: AtomicI32::new(2),
             tick: AtomicU64::new(0),
             events,
             entity_events,
+            combat_events,
         }
     }
 }
@@ -209,6 +229,10 @@ impl EntityManager {
         self.entity_events.subscribe()
     }
 
+    pub fn subscribe_combat(&self) -> broadcast::Receiver<CombatEvent> {
+        self.combat_events.subscribe()
+    }
+
     pub fn player_count(&self) -> usize {
         self.state.lock().players.len()
     }
@@ -223,6 +247,10 @@ impl EntityManager {
             player,
             pending: true,
         })
+    }
+
+    pub fn snapshot_player(&self, player: Uuid) -> Option<PlayerSnapshot> {
+        self.state.lock().players.get(&player).cloned()
     }
 
     pub fn snapshot_except(&self, player: Uuid) -> Vec<PlayerSnapshot> {
@@ -386,7 +414,19 @@ impl EntityManager {
                 }
                 let old_position = item.position;
                 let old_velocity = item.velocity;
-                item.velocity.y = (item.velocity.y - 0.04).max(-3.92);
+                // Vanilla water physics for items: slow sink instead of an
+                // air-gravity plunge through the ocean floor columns.
+                let in_water = BlockPos::new(
+                    old_position.x.floor() as i32,
+                    old_position.y.floor() as i32,
+                    old_position.z.floor() as i32,
+                )
+                .is_some_and(|body| world.get_block(body) == BlockKind::Water);
+                item.velocity.y = if in_water {
+                    (item.velocity.y - 0.02) * 0.8
+                } else {
+                    (item.velocity.y - 0.04).max(-3.92)
+                };
                 let mut next = Vec3 {
                     x: item.position.x + item.velocity.x,
                     y: item.position.y + item.velocity.y,
@@ -413,6 +453,17 @@ impl EntityManager {
                     item.velocity.x *= 0.98;
                     item.velocity.y *= 0.98;
                     item.velocity.z *= 0.98;
+                } else {
+                    // Resting on ground: ground friction must still apply, or
+                    // a landed item slides forever and walks off ledges.
+                    item.velocity.x *= 0.6;
+                    item.velocity.z *= 0.6;
+                }
+                if item.velocity.x.abs() < 0.01 {
+                    item.velocity.x = 0.0;
+                }
+                if item.velocity.z.abs() < 0.01 {
+                    item.velocity.z = 0.0;
                 }
                 item.position = next;
                 if old_position != item.position || old_velocity != item.velocity {
@@ -533,6 +584,12 @@ impl EntityManager {
         if dx * dx + dy * dy + dz * dz > MELEE_REACH_SQUARED {
             return None;
         }
+        // Vanilla `indicateDamage`: the victim's hurt-animation camera tilt
+        // derives from the damage source position relative to the victim.
+        let hurt_yaw = ((source.location.z - target.location.z)
+            .atan2(source.location.x - target.location.x)
+            .to_degrees()
+            - 90.0) as f32;
         let length = (dx * dx + dz * dz).sqrt();
         let (kx, kz) = if length > f64::EPSILON {
             (dx / length * 0.4, dz / length * 0.4)
@@ -551,6 +608,20 @@ impl EntityManager {
         let snapshot = target.clone();
         state.players.get_mut(&attacker)?.last_attack_tick = Some(tick);
         drop(state);
+        let combat = if snapshot.living.alive() {
+            CombatEvent::Hurt {
+                victim: snapshot.clone(),
+                attacker_entity_id: attacker_id.raw(),
+                hurt_yaw,
+            }
+        } else {
+            CombatEvent::Death {
+                victim: snapshot.clone(),
+                attacker_entity_id: attacker_id.raw(),
+                hurt_yaw,
+            }
+        };
+        let _ = self.combat_events.send(combat);
         let _ = self
             .entity_events
             .send(EntityEvent::Update(EntitySnapshot::Player(snapshot.clone())));
@@ -568,6 +639,16 @@ impl EntityManager {
                 }
                 let old_chunk = player.location.chunk();
                 let old_y = player.location.y;
+                // Vanilla water physics: a body in water sinks slowly and
+                // keeps most horizontal momentum (no air-drag fall). Without
+                // this a player standing in the spawn column's water sinks to
+                // the void at air terminal velocity.
+                let in_water = BlockPos::new(
+                    player.location.x.floor() as i32,
+                    (player.location.y + 0.4).floor() as i32,
+                    player.location.z.floor() as i32,
+                )
+                .is_some_and(|body| world.get_block(body) == BlockKind::Water);
                 player.location.x += player.velocity.x;
                 player.location.y += player.velocity.y;
                 player.location.z += player.velocity.z;
@@ -590,7 +671,9 @@ impl EntityManager {
                     }
                 }
                 player.velocity.x *= 0.6;
-                if player.velocity.y != 0.0 {
+                if in_water {
+                    player.velocity.y = (player.velocity.y - 0.02) * 0.8;
+                } else if player.velocity.y != 0.0 {
                     player.velocity.y = (player.velocity.y - 0.08) * 0.98;
                 }
                 player.velocity.z *= 0.6;
@@ -786,7 +869,7 @@ mod tests {
     use tokio::sync::broadcast::error::TryRecvError;
     use uuid::Uuid;
 
-    use super::{EntityEvent, EntitySnapshot, PresenceEvent, SessionRegistry, Vec3};
+    use super::{CombatEvent, EntityEvent, EntitySnapshot, PresenceEvent, SessionRegistry, Vec3};
     use crate::player_location::PlayerLocation;
 
     fn test_spawn() -> PlayerLocation {
@@ -1026,5 +1109,116 @@ mod tests {
         assert_eq!(manager.player(victim).unwrap().living.health, 0.0);
         assert!(manager.respawn_player(victim, test_spawn()).is_some());
         assert_eq!(manager.player(victim).unwrap().living.health, 20.0);
+    }
+
+    #[test]
+    fn combat_outcomes_are_broadcast_with_attacker_and_hurt_yaw() {
+        let manager = Arc::new(SessionRegistry::default());
+        let mut combat = manager.subscribe_combat();
+        let attacker = Uuid::new_v4();
+        let victim = Uuid::new_v4();
+        let attacker_registration = manager.enter(attacker, "A".into(), test_spawn()).unwrap();
+        let mut victim_spawn = test_spawn();
+        victim_spawn.x = 1.0; // directly east of the attacker
+        let victim_registration = manager.enter(victim, "B".into(), victim_spawn).unwrap();
+        let target = manager.player(victim).unwrap().entity_id;
+        let attacker_entity_id = attacker_registration.entity_id().raw();
+
+        assert!(matches!(manager.attack_player(attacker, target), Some(snapshot) if snapshot.uuid == victim));
+        let mut died = false;
+        let mut hurt_yaw = f32::NAN;
+        let mut health = f32::NAN;
+        for _ in 0..30 {
+            // Cooldown is 10 ticks; each successful hit drains one heart.
+            // The knockback physics push the victim away, so the test keeps
+            // repositioning it next to the attacker like a real fight in a
+            // confined space would.
+            victim_registration.update_location(victim_spawn);
+            // The attacker stays glued to the victim, which knockback pushes away.
+            manager.tick(&World::new());
+            manager.tick(&World::new());
+            manager.tick(&World::new());
+            manager.tick(&World::new());
+            manager.tick(&World::new());
+            manager.tick(&World::new());
+            manager.tick(&World::new());
+            manager.tick(&World::new());
+            manager.tick(&World::new());
+            manager.tick(&World::new());
+            manager.tick(&World::new());
+            if let Some(victim_state) = manager.player(victim)
+                && victim_state.living.alive()
+            {
+                // Stand one block west of the victim: in reach, with a
+                // well-defined attacker→victim direction.
+                let mut attack_position = victim_state.location;
+                attack_position.x -= 1.0;
+                attacker_registration.update_location(attack_position);
+                let _ = manager.attack_player(attacker, target);
+            }
+            while let Ok(event) = combat.try_recv() {
+                match event {
+                    CombatEvent::Hurt {
+                        victim: snapshot,
+                        attacker_entity_id: id,
+                        hurt_yaw: yaw,
+                    } => {
+                        assert_eq!(id, attacker_entity_id);
+                        assert!(snapshot.living.alive());
+                        hurt_yaw = yaw;
+                        health = snapshot.living.health;
+                    }
+                    CombatEvent::Death {
+                        victim: snapshot,
+                        attacker_entity_id: id,
+                        hurt_yaw: yaw,
+                    } => {
+                        assert_eq!(id, attacker_entity_id);
+                        assert_eq!(snapshot.living.health, 0.0);
+                        died = true;
+                        health = 0.0;
+                        // The killing blow fires from the glue position
+                        // (attacker co-located with the victim), so its tilt
+                        // yaw is degenerate; the Hurt events carry the real
+                        // vanilla yaw and are checked below.
+                        let _ = yaw;
+                    }
+                }
+            }
+            if died {
+                break;
+            }
+        }
+        assert!(died, "victim must die from repeated melee hits");
+        assert_eq!(health, 0.0);
+        // The attacker is due west of the victim: atan2(0, -1) - 90 = 90.
+        assert!((hurt_yaw - 90.0).abs() < 1.0, "unexpected hurt yaw {hurt_yaw}");
+    }
+
+    #[test]
+    fn invulnerable_or_dead_targets_are_never_attacked() {
+        let manager = Arc::new(SessionRegistry::default());
+        let mut combat = manager.subscribe_combat();
+        let attacker = Uuid::new_v4();
+        let victim = Uuid::new_v4();
+        // Keep the attacker's registration alive: dropping it removes the
+        // player from the registry.
+        let _attacker_registration = manager.enter(attacker, "A".into(), test_spawn()).unwrap();
+        let mut location = test_spawn();
+        location.x = 1.0;
+        let registration = manager.enter(victim, "B".into(), location).unwrap();
+        let target = manager.player(victim).unwrap().entity_id;
+
+        let result = manager.attack_player(attacker, target);
+        assert!(result.is_some());
+        // Ten invulnerability ticks: an immediate second attack is ignored.
+        assert!(manager.attack_player(attacker, target).is_none());
+        drop(registration);
+        manager.tick(&World::new());
+        // The victim left: its entity id no longer resolves to a player.
+        assert!(manager.attack_player(attacker, target).is_none());
+        // Only the single successful hit ever published a combat outcome.
+        assert!(matches!(combat.try_recv(), Ok(CombatEvent::Hurt { .. })));
+        assert!(matches!(combat.try_recv(), Err(TryRecvError::Empty)));
     }
 }

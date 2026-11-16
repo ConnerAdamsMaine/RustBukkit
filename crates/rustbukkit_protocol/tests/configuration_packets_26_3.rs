@@ -163,7 +163,7 @@ fn configuration_keepalive_and_pong_accept_fixed_width_big_endian_payloads() {
             &0x0123_4567_89ab_cdef_i64.to_be_bytes()[..],
             ConfigurationInbound::KeepAlive(0x0123_4567_89ab_cdef),
         ),
-        (5, &(-0x1234_567_i32).to_be_bytes()[..], ConfigurationInbound::Pong(-0x1234_567)),
+        (5, &(-0x0123_4567_i32).to_be_bytes()[..], ConfigurationInbound::Pong(-0x0123_4567)),
     ] {
         assert_eq!(parse_configuration_packet(id, payload).unwrap(), expected);
         for length in 0..payload.len() {

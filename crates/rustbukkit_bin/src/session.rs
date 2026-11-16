@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -7,6 +7,7 @@ use rustbukkit_chunks::{BlockKind, BlockPos, ChunkPos, World};
 use rustbukkit_config::ServerConfig;
 use rustbukkit_decoding::Reader;
 use rustbukkit_encoding::Writer;
+use rustbukkit_inventory::Inventory;
 use rustbukkit_protocol::{
     BlockFace,
     ClientboundPacket,
@@ -24,7 +25,7 @@ use tracing::{debug, info, trace, warn};
 use uuid::Uuid;
 
 use crate::player_location::{PlayerLocation, PlayerLocationStore};
-use crate::session_registry::{SessionRegistration, SessionRegistry};
+use crate::session_registry::{CombatEvent, PresenceEvent, SessionRegistration, SessionRegistry};
 
 /// Authoritative block change that every playing session applies.
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +58,7 @@ pub async fn run(
     registry: &Arc<SessionRegistry>,
     world: &World,
     block_events: &broadcast::Sender<BlockEvent>,
+    presence_events: &broadcast::Sender<PresenceEvent>,
     shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     let frame = read_frame(connection).await?;
@@ -90,6 +92,7 @@ pub async fn run(
                 registry,
                 world,
                 block_events,
+                presence_events,
                 shutdown,
             )
             .await
@@ -141,6 +144,7 @@ async fn login(
     registry: &Arc<SessionRegistry>,
     world: &World,
     block_events: &broadcast::Sender<BlockEvent>,
+    presence_events: &broadcast::Sender<PresenceEvent>,
     shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     connection.set_state(ProtocolState::Login)?;
@@ -197,6 +201,7 @@ async fn login(
                 registry,
                 world,
                 block_events,
+                presence_events,
                 shutdown,
             )
             .await
@@ -230,6 +235,7 @@ async fn negotiate_configuration(
     registry: &Arc<SessionRegistry>,
     world: &World,
     block_events: &broadcast::Sender<BlockEvent>,
+    presence_events: &broadcast::Sender<PresenceEvent>,
     shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     connection.set_state(ProtocolState::Configuration)?;
@@ -264,7 +270,8 @@ async fn negotiate_configuration(
     }
 
     let spawn = PlayerLocation::spawn(f64::from(world.spawn_y(0, 0)));
-    let location = locations.load(player_uuid, username, spawn).await?;
+    let crate::player_location::PlayerSnapshot { location, inventory } =
+        locations.load(player_uuid, username, spawn).await?;
     let registration = reservation
         .promote(username.to_owned(), location)
         .ok_or_else(|| anyhow::anyhow!("could not register player session"))?;
@@ -287,8 +294,10 @@ async fn negotiate_configuration(
         username,
         player_uuid,
         location,
+        inventory,
         registration,
         block_events,
+        presence_events,
         shutdown,
     )
     .await
@@ -305,8 +314,10 @@ async fn play(
     username: &str,
     player_uuid: Uuid,
     mut location: PlayerLocation,
+    mut inventory: Inventory,
     registration: SessionRegistration,
     block_events: &broadcast::Sender<BlockEvent>,
+    presence_events: &broadcast::Sender<PresenceEvent>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     connection.set_state(ProtocolState::Play)?;
@@ -323,20 +334,16 @@ async fn play(
         .write_frame(version.clientbound_id(ClientboundPacket::JoinGame), &join)
         .await?;
 
-    let mut server_data = Writer::new();
-    server_data.bool(false); // enforced secure chat
-    server_data.bool(true); // chat previews disabled
-    server_data.string(&json!({ "text": "RustBukkit" }).to_string());
+    let server_data = version.server_data_payload(&config.motd, None);
     connection
-        .write_frame(version.clientbound_id(ClientboundPacket::ServerData), &server_data.finish())
+        .write_frame(version.clientbound_id(ClientboundPacket::ServerData), &server_data)
         .await?;
 
-    let mut health = Writer::new();
-    health.f32(20.0);
-    health.varint(20);
-    health.f32(5.0);
     connection
-        .write_frame(version.clientbound_id(ClientboundPacket::UpdateHealth), &health.finish())
+        .write_frame(
+            version.clientbound_id(ClientboundPacket::UpdateHealth),
+            &version.update_health_payload(20.0, 20, 5.0),
+        )
         .await?;
 
     let time = version.time_payload(1_000);
@@ -354,6 +361,69 @@ async fn play(
 
     write_position(connection, version, 1, location).await?;
 
+    // Teach the client the authoritative player-inventory contents before it
+    // can click anything. Slot indices match the crate model: 0-8 craft/armor
+    // region (always empty), 9-35 main, 36-44 hotbar, 45 offhand.
+    let mut inventory_state_id = 0i32;
+    connection
+        .write_frame(
+            version.clientbound_id(ClientboundPacket::ContainerSetContent),
+            &version.container_set_content_payload(
+                0,
+                inventory_state_id,
+                &inventory.window(),
+                inventory.carried(),
+            ),
+        )
+        .await?;
+
+    // Announce this player to other sessions and teach this client about the
+    // players already online. Presence is broadcast at the session layer
+    // because the registry's own Joined event fires before a session enters
+    // Play and subscribes.
+    let mut joins = presence_events.subscribe();
+    let mut presence_rx = registry.subscribe();
+    // Combat outcomes (this player as victim included) arrive as broadcasts so
+    // every session renders the same authoritative hurt/death feedback.
+    let mut combat_rx = registry.subscribe_combat();
+    let mut tracked_positions: HashMap<i32, (f64, f64, f64)> = HashMap::new();
+
+    connection
+        .write_frame(
+            version.clientbound_id(ClientboundPacket::PlayerInfo),
+            &version.player_info_add_payload(&[(player_uuid, username)]),
+        )
+        .await?;
+    let others = registry.snapshot_except(player_uuid);
+    if !others.is_empty() {
+        let entries: Vec<(Uuid, &str)> = others
+            .iter()
+            .map(|player| (player.uuid, player.username.as_str()))
+            .collect();
+        connection
+            .write_frame(
+                version.clientbound_id(ClientboundPacket::PlayerInfo),
+                &version.player_info_add_payload(&entries),
+            )
+            .await?;
+        for other in &others {
+            let payload = version.add_player_payload(
+                other.entity_id,
+                other.uuid,
+                [other.location.x, other.location.y, other.location.z],
+                other.location.yaw,
+                other.location.pitch,
+            );
+            connection
+                .write_frame(version.clientbound_id(ClientboundPacket::SpawnEntity), &payload)
+                .await?;
+            tracked_positions.insert(other.entity_id, (other.location.x, other.location.y, other.location.z));
+        }
+    }
+    if let Some(snapshot) = registry.snapshot_player(player_uuid) {
+        let _ = presence_events.send(PresenceEvent::Joined(snapshot));
+    }
+
     let radius = i32::from(config.view_distance);
     let mut view = ChunkView::default();
     update_chunk_view(connection, version, world, &mut view, location.chunk(), radius).await?;
@@ -367,13 +437,18 @@ async fn play(
     let mut next_keepalive = 1i64;
     let mut last_save = Instant::now();
     let mut teleport_id = 1i32;
+    // Item pickup runs a few times per second; item entities only appear near
+    // the player and the pickup itself is idempotent per item.
+    let mut pickup = tokio::time::interval(Duration::from_millis(100));
+    pickup.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    pickup.tick().await;
 
     // The loop is wrapped so that player state is persisted even when the
     // connection fails mid-write instead of unwinding past the save below.
     let outcome: Result<()> = async {
     loop {
         if last_save.elapsed() >= Duration::from_secs(30) {
-            save_location(locations, player_uuid, username, location).await;
+            save_location(locations, player_uuid, username, location, &inventory).await;
             last_save = Instant::now();
         }
         tokio::select! {
@@ -420,6 +495,88 @@ async fn play(
                     PlayInbound::HeldSlot(slot) => {
                         if slot < 9 {
                             location.selected_hotbar_slot = slot;
+                            inventory.select(slot);
+                        }
+                    }
+                    PlayInbound::ClickContainer { container_id, slot, button, mode, .. } => {
+                        let result = if container_id == 0 {
+                            inventory.apply_click(rustbukkit_inventory::ContainerClick { slot, button, mode })
+                        } else {
+                            rustbukkit_inventory::ClickResult { applied: false, dropped: None }
+                        };
+                        // Throw and cursor drops become world item entities; if
+                        // entity allocation fails the stack is returned to the
+                        // inventory so it is never silently deleted.
+                        if let Some(stack) = result.dropped
+                            && registry.drop_from_player(stack, location).is_none()
+                        {
+                            let leftover = inventory.insert(stack);
+                            if leftover.is_some() {
+                                warn!("[PLAY] {} could not preserve a dropped stack", username);
+                            }
+                        }
+                        // Full-window resync after every click, applied or
+                        // rejected, so client predictions never desync from the
+                        // authoritative server state.
+                        inventory_state_id = inventory_state_id.wrapping_add(1);
+                        connection
+                            .write_frame(
+                                version.clientbound_id(ClientboundPacket::ContainerSetContent),
+                                &version.container_set_content_payload(
+                                    0,
+                                    inventory_state_id,
+                                    &inventory.window(),
+                                    inventory.carried(),
+                                ),
+                            )
+                            .await?;
+                    }
+                    PlayInbound::Attack { target_entity_id, .. } => {
+                        // Target existence, aliveness, reach and the attack
+                        // cooldown are all validated inside the registry.
+                        if registry.attack_player(player_uuid, target_entity_id).is_none() {
+                            debug!("[PLAY] {} attack on entity {target_entity_id} rejected", username);
+                        }
+                    }
+                    PlayInbound::RespawnRequest => {
+                        let dead = registry
+                            .snapshot_player(player_uuid)
+                            .is_some_and(|snapshot| !snapshot.living.alive());
+                        if !dead {
+                            debug!("[PLAY] {} respawn request while alive ignored", username);
+                        } else if let Some(snapshot) = registry.respawn_player(
+                            player_uuid,
+                            PlayerLocation::spawn(f64::from(world.spawn_y(0, 0))),
+                        ) {
+                            location = snapshot.location;
+                            connection
+                                .write_frame(
+                                    version.clientbound_id(ClientboundPacket::Respawn),
+                                    &version.respawn_payload(0, world.seed() as i64, world.sea_level()),
+                                )
+                                .await?;
+                            connection
+                                .write_frame(
+                                    version.clientbound_id(ClientboundPacket::UpdateHealth),
+                                    &version.update_health_payload(snapshot.living.health, 20, 5.0),
+                                )
+                                .await?;
+                            teleport_id = teleport_id.wrapping_add(1);
+                            write_position(connection, version, teleport_id, location).await?;
+                            // The death drop emptied the authoritative
+                            // inventory; resync the client window.
+                            inventory_state_id = inventory_state_id.wrapping_add(1);
+                            connection
+                                .write_frame(
+                                    version.clientbound_id(ClientboundPacket::ContainerSetContent),
+                                    &version.container_set_content_payload(
+                                        0,
+                                        inventory_state_id,
+                                        &inventory.window(),
+                                        inventory.carried(),
+                                    ),
+                                )
+                                .await?;
                         }
                     }
                     PlayInbound::Dig { action, position, .. } => {
@@ -427,7 +584,7 @@ async fn play(
                             if !within_reach(location, position) {
                                 debug!("[PLAY] {} ignored out-of-reach break", username);
                             } else {
-                                break_block(connection, version, world, registration.entity_id().raw(), player_uuid, position, username, block_events).await?;
+                                break_block(connection, version, world, registry, registration.entity_id().raw(), player_uuid, position, username, block_events).await?;
                             }
                         }
                     }
@@ -471,6 +628,125 @@ async fn play(
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
+            joined = joins.recv() => {
+                match joined {
+                    Ok(PresenceEvent::Joined(snapshot)) if snapshot.uuid != player_uuid => {
+                        connection
+                            .write_frame(
+                                version.clientbound_id(ClientboundPacket::PlayerInfo),
+                                &version.player_info_add_payload(&[(snapshot.uuid, snapshot.username.as_str())]),
+                            )
+                            .await?;
+                        let payload = version.add_player_payload(
+                            snapshot.entity_id,
+                            snapshot.uuid,
+                            [snapshot.location.x, snapshot.location.y, snapshot.location.z],
+                            snapshot.location.yaw,
+                            snapshot.location.pitch,
+                        );
+                        connection
+                            .write_frame(version.clientbound_id(ClientboundPacket::SpawnEntity), &payload)
+                            .await?;
+                        tracked_positions.insert(
+                            snapshot.entity_id,
+                            (snapshot.location.x, snapshot.location.y, snapshot.location.z),
+                        );
+                    }
+                    Ok(PresenceEvent::Left { entity_id, .. }) => {
+                        tracked_positions.remove(&entity_id);
+                        connection
+                            .write_frame(
+                                version.clientbound_id(ClientboundPacket::RemoveEntities),
+                                &version.remove_entities_payload(&[entity_id]),
+                            )
+                            .await?;
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!("[PLAY] {} missed {skipped} presence events", username);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            present = presence_rx.recv() => {
+                match present {
+                    Ok(PresenceEvent::Moved(snapshot)) if snapshot.uuid != player_uuid => {
+                        let Some(last) = tracked_positions.get(&snapshot.entity_id).copied() else {
+                            continue;
+                        };
+                        let delta = [
+                            fixed_delta(snapshot.location.x - last.0),
+                            fixed_delta(snapshot.location.y - last.1),
+                            fixed_delta(snapshot.location.z - last.2),
+                        ];
+                        let payload = version.move_entity_payload(
+                            snapshot.entity_id,
+                            delta,
+                            snapshot.location.yaw,
+                            snapshot.location.pitch,
+                            snapshot.location.on_ground,
+                        );
+                        connection
+                            .write_frame(version.clientbound_id(ClientboundPacket::EntityMove), &payload)
+                            .await?;
+                        tracked_positions.insert(
+                            snapshot.entity_id,
+                            (snapshot.location.x, snapshot.location.y, snapshot.location.z),
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!("[PLAY] {} missed {skipped} player movement events", username);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            combat = combat_rx.recv() => {
+                match combat {
+                    Ok(CombatEvent::Hurt { victim, attacker_entity_id: _, hurt_yaw }) => {
+                        send_hurt_effects(connection, version, victim.entity_id, victim.velocity, hurt_yaw).await?;
+                        if victim.uuid == player_uuid {
+                            // Vanilla `set_health` for the victim's own bar.
+                            connection
+                                .write_frame(
+                                    version.clientbound_id(ClientboundPacket::UpdateHealth),
+                                    &version.update_health_payload(victim.living.health, 20, 5.0),
+                                )
+                                .await?;
+                        }
+                    }
+                    Ok(CombatEvent::Death { victim, attacker_entity_id: _, hurt_yaw }) => {
+                        send_hurt_effects(connection, version, victim.entity_id, victim.velocity, hurt_yaw).await?;
+                        connection
+                            .write_frame(
+                                version.clientbound_id(ClientboundPacket::EntityEvent),
+                                &version.entity_event_payload(
+                                    victim.entity_id,
+                                    rustbukkit_protocol::v26_3::clientbound::ENTITY_EVENT_DEATH,
+                                ),
+                            )
+                            .await?;
+                        if victim.uuid == player_uuid {
+                            // Vanilla death: the victim's stacks become item
+                            // entities at the death location (wire presence of
+                            // item entities is N6 scope).
+                            for stack in inventory.take_all() {
+                                if registry.drop_from_player(stack, location).is_none() {
+                                    warn!("[PLAY] {} could not drop a stack on death", username);
+                                }
+                            }
+                            match Inventory::empty(location.selected_hotbar_slot) {
+                                Some(empty) => inventory = empty,
+                                None => warn!("[PLAY] {} kept the inventory after death (invalid selected slot)", username),
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!("[PLAY] {} missed {skipped} combat events", username);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
             _ = keepalive.tick() => {
                 if let Some((_, sent_at)) = awaiting_keepalive
                     && sent_at.elapsed() >= timeout
@@ -485,6 +761,27 @@ async fn play(
                 awaiting_keepalive = Some((next_keepalive, Instant::now()));
                 next_keepalive = next_keepalive.wrapping_add(1);
             }
+            _ = pickup.tick() => {
+                // A dead player collects nothing: the corpse must not pick up
+                // its own death drops before the respawn path runs.
+                let dead = registry
+                    .snapshot_player(player_uuid)
+                    .is_some_and(|snapshot| !snapshot.living.alive());
+                if !dead && registry.pickup_near(player_uuid, &mut inventory) {
+                    inventory_state_id = inventory_state_id.wrapping_add(1);
+                    connection
+                        .write_frame(
+                            version.clientbound_id(ClientboundPacket::ContainerSetContent),
+                            &version.container_set_content_payload(
+                                0,
+                                inventory_state_id,
+                                &inventory.window(),
+                                inventory.carried(),
+                            ),
+                        )
+                        .await?;
+                }
+            }
         }
     }
 
@@ -492,7 +789,11 @@ async fn play(
     }
     .await;
 
-    save_location(locations, player_uuid, username, location).await;
+    let _ = presence_events.send(PresenceEvent::Left {
+        uuid:      player_uuid,
+        entity_id: registration.entity_id().raw(),
+    });
+    save_location(locations, player_uuid, username, location, &inventory).await;
     info!("[PLAY] {} left at {:.1},{:.1},{:.1}", username, location.x, location.y, location.z);
     outcome
 }
@@ -502,10 +803,15 @@ async fn save_location(
     player_uuid: Uuid,
     username: &str,
     location: PlayerLocation,
+    inventory: &Inventory,
 ) {
-    if let Err(error) = locations.save(player_uuid, username, location).await {
+    if let Err(error) = locations.save(player_uuid, username, location, inventory).await {
         warn!("[PLAY] could not save {}: {error}", username);
     }
+}
+
+fn fixed_delta(value: f64) -> i16 {
+    (value * 4096.0).round().clamp(-32_768.0, 32_767.0) as i16
 }
 
 fn moved(
@@ -553,6 +859,7 @@ async fn break_block(
     connection: &mut Connection,
     version: &'static dyn VersionPack,
     world: &World,
+    registry: &SessionRegistry,
     entity_id: i32,
     player_uuid: Uuid,
     position: BlockPos,
@@ -566,6 +873,9 @@ async fn break_block(
     }
     if world.set_block_if(position, current, BlockKind::Air) {
         debug!("[PLAY] {} broke {current:?} at {:?} (entity {entity_id})", username, position);
+        // The authoritative drop spawns as a world item entity; the victim's
+        // and observers' sessions pick it up through the pickup interval.
+        let _ = registry.drop_from_block(current, position);
         let _ = block_events.send(BlockEvent::Changed {
             source: player_uuid,
             position,
@@ -623,6 +933,41 @@ async fn write_position(
     );
     connection
         .write_frame(version.clientbound_id(ClientboundPacket::PlayerPosition), &payload)
+        .await?;
+    Ok(())
+}
+
+/// Vanilla hurt feedback sent to every session tracking the victim, the
+/// victim's own connection included: hurt animation, the hurt entity event and
+/// the authoritative knockback motion. The victim additionally receives its
+/// own `set_health` update at the call sites.
+async fn send_hurt_effects(
+    connection: &mut Connection,
+    version: &'static dyn VersionPack,
+    victim_entity_id: i32,
+    velocity: crate::session_registry::Vec3,
+    hurt_yaw: f32,
+) -> Result<()> {
+    connection
+        .write_frame(
+            version.clientbound_id(ClientboundPacket::HurtAnimation),
+            &version.hurt_animation_payload(victim_entity_id, hurt_yaw),
+        )
+        .await?;
+    connection
+        .write_frame(
+            version.clientbound_id(ClientboundPacket::EntityEvent),
+            &version.entity_event_payload(
+                victim_entity_id,
+                rustbukkit_protocol::v26_3::clientbound::ENTITY_EVENT_HURT,
+            ),
+        )
+        .await?;
+    connection
+        .write_frame(
+            version.clientbound_id(ClientboundPacket::EntityVelocity),
+            &version.entity_velocity_payload(victim_entity_id, [velocity.x, velocity.y, velocity.z]),
+        )
         .await?;
     Ok(())
 }

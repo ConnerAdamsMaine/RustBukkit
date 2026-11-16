@@ -19,6 +19,32 @@ truth for RustBukkit's protocol constants:
 |---|---|
 | `packet_ids.json` | Complete 26.3 handshake/status/login/configuration/play packet IDs per direction, keyed by registry name with the `minecraft:` prefix removed. |
 | `block_states.json` | Default block-state IDs for the block kinds RustBukkit currently implements. |
+| `configuration_registries.bin` | The 32 Configuration `registry_data` payloads the official 26.3 server sends, as repeated `u32` big-endian length + payload. Replayed verbatim so every network registry index (biome, dimension type, world clock, damage type, ...) is vanilla-exact. |
+| `configuration_tags.bin` | The official 26.3 Configuration `update_tags` payload (58,754 bytes). Registry entries reference item tags, and an unmodified client aborts configuration with "Missing tag" when this packet is absent. |
+| `golden_packets.json` | Raw official-server bytes for Login Success, Server Data (plain MOTD, no icon), Join Game, plus resolved registry indices (`plains` biome 41, overworld dimension type 0, overworld clock 0). |
+
+The registry snapshot and golden packets were captured by connecting a raw
+protocol probe to the official `server-26.3.jar` (offline mode, flat world) and
+recording its uncompressed payloads. Captured bytes are protocol-derived data,
+not Mojang code or bundled assets. `tests/golden_payloads_26_3.rs` re-encodes
+Login Success, Server Data and the registry identifiers from Rust and compares
+them byte-for-byte with these fixtures.
+
+Additional 26.3 wire facts verified against the official server bytecode
+(`javap`) and live traffic, recorded in code comments and tests:
+
+- Light masks are `BitSet.toByteArray()` (VarInt byte length + little-endian
+  bytes), not the older VarInt long-count + longs; the old layout makes a real
+  client reject every `level_chunk_with_light` packet.
+- `add_entity` for a player uses entity-type id `120`, followed by an absolute
+  position, a zero movement Vec3, x/y/head rotation bytes and a data VarInt.
+- `player_info_update` starts with an EnumSet action bitmask; `0x09` means
+  `ADD_PLAYER | UPDATE_LISTED` and each entry is UUID, name, properties, listed.
+- Server Data and disconnect reasons are network-NBT text Components, not JSON
+  strings.
+- Move Entity Pos/Rot starts with packed properties (`onGround | stepCount << 1`)
+  and a linear `VecDelta` of three shorts when the step count is zero; it is not
+  the older entity-id/shorts/rotations/on-ground layout.
 
 `crates/rustbukkit_protocol/tests/protocol_ids_26_3.rs` loads both files and
 asserts that the encoder constants and `VersionPack::clientbound_id` mapping

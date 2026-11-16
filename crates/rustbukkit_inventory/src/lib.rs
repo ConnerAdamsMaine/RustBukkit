@@ -1,4 +1,5 @@
 use std::num::NonZeroU8;
+use std::ops::Range;
 
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -84,6 +85,61 @@ pub struct Inventory {
     slots:    [Option<ItemStack>; 46],
     carried:  Option<ItemStack>,
     selected: u8,
+}
+
+/// `container_click` mode (`ClickType` id on the wire, mapped 1:1 by the
+/// protocol layer). Vanilla drag crafting (`QuickCraft`) and double-click
+/// gathering (`PickupAll`) are not implemented yet and are rejected safely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickMode {
+    Pickup,
+    QuickMove,
+    Swap,
+    Clone,
+    Throw,
+    QuickCraft,
+    PickupAll,
+}
+
+impl ClickMode {
+    pub fn from_wire(mode: i32) -> Self {
+        match mode {
+            1 => Self::QuickMove,
+            2 => Self::Swap,
+            3 => Self::Clone,
+            4 => Self::Throw,
+            5 => Self::QuickCraft,
+            6 => Self::PickupAll,
+            _ => Self::Pickup,
+        }
+    }
+}
+
+/// One parsed `container_click` against the player inventory window (0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerClick {
+    pub slot:   i16,
+    pub button: i8,
+    pub mode:   ClickMode,
+}
+
+impl ContainerClick {
+    /// Cursor drop slot used by vanilla when clicking outside the window.
+    pub const CURSOR_SLOT: i16 = -999;
+
+    pub fn slot(self) -> i16 {
+        self.slot
+    }
+}
+
+/// Result of applying a click authoritatively.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClickResult {
+    /// `true` when the inventory changed and a resync is required.
+    pub applied: bool,
+    /// Items removed from the inventory entirely; the caller must spawn them
+    /// as item entities (a throw or a cursor drop). Never an empty stack.
+    pub dropped: Option<ItemStack>,
 }
 
 impl Serialize for Inventory {
@@ -239,6 +295,11 @@ impl Inventory {
         self.slots.get(usize::from(slot)).copied().flatten()
     }
 
+    /// All 46 window slots (0-8 is the craft/armor region and stays empty).
+    pub fn window(&self) -> [Option<ItemStack>; 46] {
+        self.slots
+    }
+
     pub fn carried(&self) -> Option<ItemStack> {
         self.carried
     }
@@ -254,6 +315,217 @@ impl Inventory {
 
     pub fn drop_selected(&mut self, entire_stack: bool) -> bool {
         self.take_selected(entire_stack).is_some()
+    }
+
+    /// Apply one client click authoritatively: the server computes the result
+    /// from `(slot, button, mode)` and never trusts the client's prediction.
+    /// Rejected clicks leave the inventory untouched so the client can be
+    /// resynced to authoritative state.
+    pub fn apply_click(&mut self, click: ContainerClick) -> ClickResult {
+        let rejected = ClickResult {
+            applied: false,
+            dropped: None,
+        };
+        if click.slot == ContainerClick::CURSOR_SLOT {
+            return match click.mode {
+                ClickMode::Pickup => {
+                    match click.button {
+                        0 => self.drop_carried(false).unwrap_or(rejected),
+                        _ => self.drop_carried(true).unwrap_or(rejected),
+                    }
+                }
+                ClickMode::Throw => {
+                    match click.button {
+                        0 => self.drop_carried(false).unwrap_or(rejected),
+                        _ => self.drop_carried(true).unwrap_or(rejected),
+                    }
+                }
+                _ => rejected,
+            };
+        }
+        if !(9..=45).contains(&click.slot) {
+            return rejected;
+        }
+        let index = usize::from(click.slot as u8);
+        let result = match click.mode {
+            ClickMode::Pickup => {
+                match click.button {
+                    0 => self.pickup_left(index),
+                    1 => self.pickup_right(index),
+                    _ => None,
+                }
+            }
+            ClickMode::QuickMove => self.quick_move(index),
+            ClickMode::Swap => self.swap_hotbar_or_offhand(index, click.button),
+            ClickMode::Throw => {
+                let dropped = match (self.slots[index], click.button) {
+                    (Some(_), 0) => self.take(InventorySlot(click.slot as u8), NonZeroU8::MIN),
+                    (Some(_), _) => self.take_stack(InventorySlot(click.slot as u8)),
+                    (None, _) => None,
+                };
+                dropped.map(|dropped| {
+                    ClickResult {
+                        applied: true,
+                        dropped: Some(dropped),
+                    }
+                })
+            }
+            // Not implemented yet; rejecting keeps item counts authoritative.
+            ClickMode::Clone | ClickMode::QuickCraft | ClickMode::PickupAll => None,
+        };
+        match result {
+            None => rejected,
+            Some(outcome) => outcome,
+        }
+    }
+
+    /// Drop the carried stack (or one item from it). Returns the dropped stack.
+    fn drop_carried(&mut self, one: bool) -> Option<ClickResult> {
+        let carried = self.carried?;
+        let dropped = if one {
+            self.carried = carried.take_one();
+            Some(ItemStack::new(carried.kind(), 1).expect("a one-item drop fits"))
+        } else {
+            self.carried = None;
+            Some(carried)
+        };
+        Some(ClickResult {
+            applied: true,
+            dropped,
+        })
+    }
+
+    fn pickup_left(&mut self, index: usize) -> Option<ClickResult> {
+        let current = self.slots[index];
+        if self.carried.is_none() {
+            let taken = current?;
+            self.slots[index] = None;
+            self.carried = Some(taken);
+            return Some(ClickResult {
+                applied: true,
+                dropped: None,
+            });
+        }
+        let carried = self.carried?;
+        match current {
+            None => {
+                self.slots[index] = Some(carried);
+                self.carried = None;
+                Some(ClickResult {
+                    applied: true,
+                    dropped: None,
+                })
+            }
+            Some(current) if current.kind() == carried.kind() => {
+                if current.count() >= 64 {
+                    return None;
+                }
+                let transfer = carried.count().min(64 - current.count());
+                self.slots[index] = current.with_count(current.count() + transfer);
+                let remaining = carried.with_count(carried.count() - transfer);
+                self.carried = remaining;
+                Some(ClickResult {
+                    applied: true,
+                    dropped: None,
+                })
+            }
+            Some(current) => {
+                self.slots[index] = Some(carried);
+                self.carried = Some(current);
+                Some(ClickResult {
+                    applied: true,
+                    dropped: None,
+                })
+            }
+        }
+    }
+
+    fn pickup_right(&mut self, index: usize) -> Option<ClickResult> {
+        let current = self.slots[index];
+        if self.carried.is_none() {
+            let stack = current?;
+            let half = stack.count().div_ceil(2);
+            self.slots[index] = stack.with_count(stack.count() - half);
+            self.carried = stack.with_count(half);
+            return Some(ClickResult {
+                applied: true,
+                dropped: None,
+            });
+        }
+        let carried = self.carried?;
+        match current {
+            None => {
+                self.slots[index] = carried.with_count(1);
+                self.carried = carried.take_one();
+                Some(ClickResult {
+                    applied: true,
+                    dropped: None,
+                })
+            }
+            Some(current) if current.kind() == carried.kind() && current.count() < 64 => {
+                self.slots[index] = current.with_count(current.count() + 1);
+                self.carried = carried.take_one();
+                Some(ClickResult {
+                    applied: true,
+                    dropped: None,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Shift-click: move the whole stack between the main inventory and the
+    /// hotbar (merging with matching stacks first), leaving remainder in place.
+    fn quick_move(&mut self, index: usize) -> Option<ClickResult> {
+        const MAIN: Range<usize> = 9..36;
+        const HOTBAR: Range<usize> = 36..45;
+        let target_region = if MAIN.contains(&index) { HOTBAR } else { MAIN };
+        let stack = self.slots[index].filter(|stack| stack.count() > 0)?;
+        let mut remaining = stack.count();
+        for target in target_region.clone() {
+            if let Some(current) = self.slots[target]
+                && current.kind() == stack.kind()
+                && current.count() < 64
+            {
+                let moved = remaining.min(64 - current.count());
+                self.slots[target] = current.with_count(current.count() + moved);
+                remaining -= moved;
+                if remaining == 0 {
+                    break;
+                }
+            }
+        }
+        if remaining > 0 {
+            for target in target_region {
+                if self.slots[target].is_none() {
+                    self.slots[target] = stack.with_count(remaining);
+                    remaining = 0;
+                    break;
+                }
+            }
+        }
+        if remaining == stack.count() {
+            return None; // nothing fit
+        }
+        self.slots[index] = stack.with_count(remaining);
+        Some(ClickResult {
+            applied: true,
+            dropped: None,
+        })
+    }
+
+    /// Swap a slot with a hotbar slot (button 0-8) or the offhand (button 40).
+    fn swap_hotbar_or_offhand(&mut self, index: usize, button: i8) -> Option<ClickResult> {
+        let target = match button {
+            0..=8 => 36 + usize::from(button as u8),
+            40 => 45,
+            _ => return None,
+        };
+        self.slots.swap(index, target);
+        Some(ClickResult {
+            applied: true,
+            dropped: None,
+        })
     }
 
     pub fn apply_client_changes(
@@ -328,7 +600,16 @@ impl Inventory {
 mod tests {
     use std::num::NonZeroU8;
 
-    use super::{Inventory, InventoryAction, InventorySlot, ItemKind, ItemStack};
+    use super::{
+        ClickMode,
+        ClickResult,
+        ContainerClick,
+        Inventory,
+        InventoryAction,
+        InventorySlot,
+        ItemKind,
+        ItemStack,
+    };
 
     fn slot(index: u8) -> InventorySlot {
         InventorySlot::new(index).unwrap()
@@ -427,6 +708,290 @@ mod tests {
         assert_eq!(inventory.window_slot(9), grass);
         assert!(!inventory.apply_client_changes(InventoryAction::Rearrange, &[(36, grass)], None));
         assert_eq!(inventory.selected_stack(), None);
+    }
+
+    #[test]
+    fn pickup_clicks_move_split_and_merge_stacks_authoritatively() {
+        let dirt = ItemStack::new(ItemKind::Dirt, 3).unwrap();
+        let stone = ItemStack::new(ItemKind::Stone, 1).unwrap();
+
+        // Left-click picks the whole stack up onto the cursor.
+        let mut inventory = Inventory::empty(0).unwrap();
+        inventory.set(slot(9), Some(dirt));
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   9,
+                button: 0,
+                mode:   ClickMode::Pickup,
+            }),
+            ClickResult {
+                applied: true,
+                dropped: None,
+            }
+        );
+        assert_eq!(inventory.window_slot(9), None);
+        assert_eq!(inventory.carried(), Some(dirt));
+
+        // Left-click onto a different kind swaps cursor and slot.
+        inventory.set(slot(10), Some(stone));
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   10,
+                button: 0,
+                mode:   ClickMode::Pickup,
+            }),
+            ClickResult {
+                applied: true,
+                dropped: None,
+            }
+        );
+        assert_eq!(inventory.window_slot(10), Some(dirt));
+        assert_eq!(inventory.carried(), Some(stone));
+
+        // Left-click back onto the slot swaps again, then right-click onto an
+        // empty slot places exactly one item.
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   10,
+                button: 0,
+                mode:   ClickMode::Pickup,
+            }),
+            ClickResult {
+                applied: true,
+                dropped: None,
+            }
+        );
+        assert_eq!(inventory.window_slot(10), Some(stone));
+        assert_eq!(inventory.carried(), Some(dirt));
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   11,
+                button: 1,
+                mode:   ClickMode::Pickup,
+            }),
+            ClickResult {
+                applied: true,
+                dropped: None,
+            }
+        );
+        assert_eq!(inventory.window_slot(11), Some(ItemStack::new(ItemKind::Dirt, 1).unwrap()));
+        assert_eq!(inventory.carried(), Some(ItemStack::new(ItemKind::Dirt, 2).unwrap()));
+
+        // Left-click onto the same kind merges; the cursor empties when all fit.
+        inventory.set(slot(12), Some(ItemStack::new(ItemKind::Dirt, 62).unwrap()));
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   12,
+                button: 0,
+                mode:   ClickMode::Pickup,
+            }),
+            ClickResult {
+                applied: true,
+                dropped: None,
+            }
+        );
+        assert_eq!(inventory.window_slot(12), Some(ItemStack::new(ItemKind::Dirt, 64).unwrap()));
+        assert_eq!(inventory.carried(), None);
+    }
+
+    #[test]
+    fn right_click_takes_half_and_rejects_full_stacks() {
+        let dirt = ItemStack::new(ItemKind::Dirt, 5).unwrap();
+        let mut inventory = Inventory::empty(0).unwrap();
+        inventory.set(slot(9), Some(dirt));
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   9,
+                button: 1,
+                mode:   ClickMode::Pickup,
+            }),
+            ClickResult {
+                applied: true,
+                dropped: None,
+            }
+        );
+        assert_eq!(inventory.window_slot(9), Some(ItemStack::new(ItemKind::Dirt, 2).unwrap()));
+        assert_eq!(inventory.carried(), Some(ItemStack::new(ItemKind::Dirt, 3).unwrap()));
+
+        // A full slot cannot accept a right-clicked item.
+        inventory.set(slot(10), Some(ItemStack::new(ItemKind::Stone, 64).unwrap()));
+        inventory.carried = Some(ItemStack::new(ItemKind::Dirt, 3).unwrap());
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   10,
+                button: 1,
+                mode:   ClickMode::Pickup,
+            }),
+            ClickResult {
+                applied: false,
+                dropped: None,
+            }
+        );
+        assert_eq!(inventory.window_slot(10), Some(ItemStack::new(ItemKind::Stone, 64).unwrap()));
+        assert_eq!(inventory.carried(), Some(ItemStack::new(ItemKind::Dirt, 3).unwrap()));
+    }
+
+    #[test]
+    fn quick_move_shifts_between_main_inventory_and_hotbar() {
+        let mut inventory = Inventory::empty(0).unwrap();
+        inventory.set(slot(9), Some(ItemStack::new(ItemKind::Dirt, 64).unwrap()));
+        inventory.set(slot(36), Some(ItemStack::new(ItemKind::Dirt, 60).unwrap()));
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   9,
+                button: 0,
+                mode:   ClickMode::QuickMove,
+            }),
+            ClickResult {
+                applied: true,
+                dropped: None,
+            }
+        );
+        assert_eq!(inventory.window_slot(36), Some(ItemStack::new(ItemKind::Dirt, 64).unwrap()));
+        assert_eq!(inventory.window_slot(37), Some(ItemStack::new(ItemKind::Dirt, 60).unwrap()));
+        assert_eq!(inventory.window_slot(9), None);
+
+        // Nothing fits: rejected without deleting items.
+        let dirt = ItemStack::new(ItemKind::Dirt, 60).unwrap();
+        let mut inventory = Inventory::empty(0).unwrap();
+        inventory.set(slot(36), Some(dirt));
+        for index in 9..36 {
+            inventory.set(slot(index as u8), Some(ItemStack::new(ItemKind::Stone, 64).unwrap()));
+        }
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   36,
+                button: 0,
+                mode:   ClickMode::QuickMove,
+            }),
+            ClickResult {
+                applied: false,
+                dropped: None,
+            }
+        );
+        assert_eq!(inventory.window_slot(36), Some(dirt));
+    }
+
+    #[test]
+    fn swap_click_exchanges_with_hotbar_and_offhand() {
+        let mut inventory = Inventory::empty(0).unwrap();
+        inventory.set(slot(9), Some(ItemStack::new(ItemKind::Dirt, 2).unwrap()));
+        inventory.set(slot(38), Some(ItemStack::new(ItemKind::Stone, 4).unwrap()));
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   9,
+                button: 2,
+                mode:   ClickMode::Swap,
+            }),
+            ClickResult {
+                applied: true,
+                dropped: None,
+            }
+        );
+        assert_eq!(inventory.window_slot(9), Some(ItemStack::new(ItemKind::Stone, 4).unwrap()));
+        assert_eq!(inventory.window_slot(38), Some(ItemStack::new(ItemKind::Dirt, 2).unwrap()));
+    }
+
+    #[test]
+    fn throw_and_cursor_drops_return_items_instead_of_deleting_them() {
+        let mut inventory = Inventory::empty(0).unwrap();
+        inventory.set(slot(9), Some(ItemStack::new(ItemKind::Dirt, 5).unwrap()));
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   9,
+                button: 0,
+                mode:   ClickMode::Throw,
+            }),
+            ClickResult {
+                applied: true,
+                dropped: Some(ItemStack::new(ItemKind::Dirt, 1).unwrap()),
+            }
+        );
+        assert_eq!(inventory.window_slot(9), Some(ItemStack::new(ItemKind::Dirt, 4).unwrap()));
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   9,
+                button: 1,
+                mode:   ClickMode::Throw,
+            }),
+            ClickResult {
+                applied: true,
+                dropped: Some(ItemStack::new(ItemKind::Dirt, 4).unwrap()),
+            }
+        );
+        assert_eq!(inventory.window_slot(9), None);
+
+        // Cursor drop of the whole carried stack.
+        let mut inventory = Inventory::empty(0).unwrap();
+        inventory.carried = Some(ItemStack::new(ItemKind::Stone, 7).unwrap());
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   -999,
+                button: 0,
+                mode:   ClickMode::Pickup,
+            }),
+            ClickResult {
+                applied: true,
+                dropped: Some(ItemStack::new(ItemKind::Stone, 7).unwrap()),
+            }
+        );
+        assert_eq!(inventory.carried(), None);
+    }
+
+    #[test]
+    fn unimplemented_and_out_of_range_clicks_are_rejected_without_change() {
+        let mut inventory = Inventory::test_inventory(0).unwrap();
+        let before = serde_json::to_value(&inventory).unwrap();
+
+        // Crafting/armor slots (0-8) are not modeled.
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   0,
+                button: 0,
+                mode:   ClickMode::Pickup,
+            }),
+            ClickResult {
+                applied: false,
+                dropped: None,
+            }
+        );
+        // Drag crafting is not implemented yet.
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   9,
+                button: 0,
+                mode:   ClickMode::QuickCraft,
+            }),
+            ClickResult {
+                applied: false,
+                dropped: None,
+            }
+        );
+        // Clone is creative-only.
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   9,
+                button: 0,
+                mode:   ClickMode::Clone,
+            }),
+            ClickResult {
+                applied: false,
+                dropped: None,
+            }
+        );
+        // An empty slot cannot throw.
+        assert_eq!(
+            inventory.apply_click(ContainerClick {
+                slot:   20,
+                button: 0,
+                mode:   ClickMode::Throw,
+            }),
+            ClickResult {
+                applied: false,
+                dropped: None,
+            }
+        );
+        assert_eq!(serde_json::to_value(&inventory).unwrap(), before);
     }
 
     #[test]
